@@ -61,6 +61,7 @@ genTxM memo m = do
   World ss hmm lmm ps _ <- view hasLens
   genDict <- use hasLens
   mm <- getSignatures hmm lmm
+  -- AKA dictValues devuelve las ctes que son int o uint guardadas en genDict
   let ns = dictValues genDict
   s' <- rElem ss
   r' <- rElem $ NE.fromList . catMaybes $ toContractA mm <$> toList m

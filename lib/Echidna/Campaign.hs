@@ -236,8 +236,11 @@ callseq ic v w ql = do
   -- Then, we generate the actual transaction in the sequence
   is <- randseq ic ql old w
   -- We then run each call sequentially. This gives us the result of each call, plus a new state
+  -- AKA res es: [(Tx, (VMResult, Int))] donde Int es el gas use
+  -- AKA s es el state que es: (VM, Campaign)
   (res, s) <- runStateT (evalSeq w v ef is) (v, ca)
   let new = s ^. _1 . env . EVM.contracts
+      -- Q: por que puede cambiar/ agregarse addresses de contratos??
       -- compute the addresses not present in the old VM via set difference
       diff = keys $ new \\ old
       -- and construct a set to union to the constants table
