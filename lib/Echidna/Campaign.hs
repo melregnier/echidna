@@ -196,22 +196,22 @@ addToCorpus n res = unless (null rtxs) $ hasLens . corpus %= DS.insert (toIntege
 randseq :: ( MonadRandom m, MonadReader x m, MonadState y m
            , Has TxConf x, Has TestConf x, Has CampaignConf x, Has GenDict y, Has Campaign y)
         => InitialCorpus -> Int -> Map Addr Contract -> World -> m [Tx]
-randseq (n,txs) ql o w = do
+randseq (n,txs) ql o w = do -- txs es una lista de lista de transacciones
   ca <- use hasLens
-  cs <- view $ hasLens . mutConsts
+  cs <- view $ hasLens . mutConsts -- cs son las ctes de mutacion de CampaignConf
   txConf :: TxConf <- view hasLens
-  let ctxs = ca ^. corpus
+  let ctxs = ca ^. corpus -- ctxs son las txs del corpus
       -- TODO: include reproducer when optimizing
       --rs   = filter (not . null) $ map (view testReproducer) $ ca ^. tests
       p    = ca ^. ncallseqs
   if n > p then -- Replay the transactions in the corpus, if we are executing the first iterations
-    return $ txs !! p
+    return $ txs !! p -- devuelvo la p-esima secuencia de txs en el corpus
   else do
     memo <- use $ hasLens . bcMemo
     -- Randomly generate new random transactions
     gtxs <- replicateM ql $ runReaderT (genTxM memo o) (w, txConf)
     -- Generate a random mutator
-    cmut <- if ql == 1 then seqMutatorsStateless (fromConsts cs) else seqMutatorsStateful (fromConsts cs)
+    cmut <- if ql == 1 then seqMutatorsStateless (fromConsts cs) else seqMutatorsStateful (fromConsts cs) -- las ctes de mutacion determinan que tan probable es elegir un mutator
     -- Fetch the mutator
     let mut = getCorpusMutation cmut
     if DS.null ctxs then

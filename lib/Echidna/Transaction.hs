@@ -58,7 +58,7 @@ genTxM :: (MonadRandom m, MonadReader x m, MonadState y m, Has TxConf x, Has Wor
   -> m Tx
 genTxM memo m = do
   TxConf _ g gp t b mv <- view hasLens -- available gas, max gas price, max time delay, max block delay, max value
-  World ss hmm lmm ps _ <- view hasLens -- senders, 
+  World ss hmm lmm ps _ <- view hasLens -- senders, high priority calls, low priority calls, payable signatures
   genDict <- use hasLens
   mm <- getSignatures hmm lmm
   -- AKA dictValues devuelve las ctes que son int o uint guardadas en genDict

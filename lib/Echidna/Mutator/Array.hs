@@ -78,12 +78,14 @@ swapRandList xs =
     j <- getRandomR (0, LL.length xs - 1)
     return $ if i == j then xs else swapAt xs (min i j) (max i j)
 
+-- Elige dos lugares random  de las dos listas y "pega" la primer parte del primero y la segunda parte del segundo
 spliceAtRandom :: (LL.ListLike f i, MonadRandom m) => f -> f -> m f
 spliceAtRandom xs1 xs2 = do
   idx1 <- getRandomR (0, LL.length xs1 - 1)
   idx2 <- getRandomR (0, LL.length xs2 - 1)
   return $ LL.take idx1 xs1 <> LL.drop idx2 xs2
 
+-- Elige dos lugares random de las dos listas, toma las primeras partes de ambas y las intercala.
 interleaveAtRandom :: (LL.ListLike f i, MonadRandom m) => f -> f -> m f
 interleaveAtRandom xs1 xs2 = do
   idx1 <- getRandomR (0, LL.length xs1 - 1)

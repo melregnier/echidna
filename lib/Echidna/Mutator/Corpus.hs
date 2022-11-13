@@ -46,10 +46,12 @@ mutator Deletion = deleteRandList
 selectAndMutate :: MonadRandom m
                 => ([Tx] -> m [Tx]) -> Corpus -> m [Tx]
 selectAndMutate f ctxs = do
-  rtxs <- weighted $ map (\(i, txs) -> (txs, fromInteger i)) $ DS.toDescList ctxs
+  rtxs <- weighted $ map (\(i, txs) -> (txs, fromInteger i)) $ DS.toDescList ctxs -- utiliza el orden de inserción como peso de probabilidad de elegir un elem del corpus (mas nuevo -> mas probable)
   k <- getRandomR (0, length rtxs - 1)
-  f $ take k rtxs
+  f $ take k rtxs -- elige una cantidad random de primeras transacciones de la secuencia del corpus elegida
 
+-- ctxs -> corpus transactions, gtxs -> generated transactions
+-- combina dos sec del corpus usando la funcion dada y si faltan elems para llegar a ql, añade de las transacciones generadas.
 selectAndCombine :: MonadRandom m
                  => ([Tx] -> [Tx] -> m [Tx]) -> Int -> Corpus -> [Tx] -> m [Tx]
 selectAndCombine f ql ctxs gtxs = do
@@ -59,19 +61,20 @@ selectAndCombine f ql ctxs gtxs = do
   return . take ql $ txs ++ gtxs
     where selectFromCorpus = weighted $ map (\(i, txs) -> (txs, fromInteger i)) $ DS.toDescList ctxs
 
+-- ctxs -> corpus transactions, gtxs -> generated transactions
 getCorpusMutation :: (MonadRandom m, Has GenDict x, MonadState x m)
                   => CorpusMutation -> (Int -> Corpus -> [Tx] -> m [Tx])
-getCorpusMutation (RandomAppend m) = mut (mutator m)
+getCorpusMutation (RandomAppend m) = mut (mutator m) -- mutator te da la funcion que aplica la mutacion elegida
  where mut f ql ctxs gtxs = do
           rtxs' <- selectAndMutate f ctxs
-          return . take ql $ rtxs' ++ gtxs
+          return . take ql $ rtxs' ++ gtxs -- elige una cantidad mutada de transacciones en base a un elem del corpus y lo añade al ppio de las txs generadas, se eligen ql elems
 getCorpusMutation (RandomPrepend m) = mut (mutator m)
  where mut f ql ctxs gtxs = do
           rtxs' <- selectAndMutate f ctxs
           k <- getRandomR (0, ql - 1)
-          return . take ql $ take k gtxs ++ rtxs'
-getCorpusMutation RandomSplice = selectAndCombine spliceAtRandom
-getCorpusMutation RandomInterleave = selectAndCombine interleaveAtRandom
+          return . take ql $ take k gtxs ++ rtxs' -- elige una cant random de txs generadas a las que agrega al final una cantidad mutada de transacciones en base a un elem del corpus
+getCorpusMutation RandomSplice = selectAndCombine spliceAtRandom -- elige dos secuencias del corpus, las corta en lugares random y pega la primer parte de uno y la segunda del otro, completa con gtxs
+getCorpusMutation RandomInterleave = selectAndCombine interleaveAtRandom -- elige dos secs del corpus, toma las primeras partes en lugares random y las intercala, completa con gtxs
 
 seqMutatorsStateful :: MonadRandom m => MutationConsts Rational -> m CorpusMutation
 seqMutatorsStateful (c1, c2, c3, c4) = weighted
