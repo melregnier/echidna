@@ -325,7 +325,7 @@ genWithDict genDict m g t = do
   let maybeValM = if genDict ^. pSynthA >= r then fromDict else pure Nothing
       fromDict = uniformMay (M.lookupDefault [] t m)
   fromMaybe <$> g t <*> maybeValM
-
+  
 -- | Synthesize a random 'AbiValue' given its 'AbiType'. Requires a dictionary.
 genAbiValueM :: MonadRandom m => GenDict -> AbiType -> m AbiValue
 genAbiValueM genDict = genWithDict genDict (toList <$> genDict ^. constants) $ \case
