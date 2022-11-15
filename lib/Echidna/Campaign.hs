@@ -96,9 +96,9 @@ updateTest w vm (Just (vm', xs)) test = do
   case test ^. testState of
     Open i | i >= tl -> case test ^. testType of
                           OptimizationTest _ _ -> pure $ test { _testState = Large (-1) }
-                          _                    -> pure $ test { _testState = Passed }
+                          _                    -> pure $ test { _testState = Passed } -- si intente las suficientes veces, asumo que es unsolvable
     Open i           -> do r <- evalStateT (checkETest test) vm' 
-                           pure $ updateOpenTest test xs i r 
+                           pure $ updateOpenTest test xs i r
     _                -> updateTest w vm Nothing test
 
 updateTest _ vm Nothing test = do
@@ -130,9 +130,9 @@ evalSeq :: ( MonadCatch m, MonadRandom m, MonadReader x m, MonadState y m
 evalSeq w v e = go [] where
   go r xs = do
     v' <- use hasLens
-    runUpdate (updateTest w v $ Just (v', reverse r))
+    runUpdate (updateTest w v $ Just (v', reverse r)) -- checks the properties/assertions/optimizations/whatever and updates the echidna tests before executing the next tx using the last vm state
     case xs of []     -> pure []
-               (y:ys) -> e y >>= \a -> ((y, a) :) <$> go (y:r) ys
+               (y:ys) -> e y >>= \a -> ((y, a) :) <$> go (y:r) ys -- executes the first tx in the list and adds the results to the accumulator list of executed txs
 
 -- | Given a call sequence that produces Tx with gas >= g for f, try to randomly generate
 -- a smaller one that achieves at least that gas usage

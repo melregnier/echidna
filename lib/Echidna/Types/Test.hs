@@ -48,7 +48,7 @@ instance Show TestValue where
   show (IntValue x)  = show x
   show NoValue       = ""
 
-data TestType = PropertyTest Text Addr
+data TestType = PropertyTest Text Addr -- Text -> property function name, Addr -> address of the contract where the property is defined
               | OptimizationTest Text Addr
               | AssertionTest Bool SolSignature Addr
               | CallTest Text (DappInfo -> VM -> TestValue) 
