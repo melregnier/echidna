@@ -111,7 +111,8 @@ removeCallTx :: Tx -> Tx
 removeCallTx (Tx _ _ r _ _ _ d) = Tx NoCall 0 r 0 0 0 d
 
 -- | Given a 'Transaction', generate a random \"smaller\" 'Transaction', preserving origin,
--- destination, value, and call signature.
+-- and destination, and usually call signature.
+-- Generally, it tries to get all numbers closer to 0 or bytes with more zeros.
 shrinkTx :: MonadRandom m => Tx -> m Tx
 shrinkTx tx'@(Tx c _ _ _ gp (C _ v) (C _ t, C _ b)) = let
   c' = case c of

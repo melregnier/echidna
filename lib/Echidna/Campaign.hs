@@ -241,12 +241,14 @@ callseq ic v w ql = do
   (res, s) <- runStateT (evalSeq w v ef is) (v, ca)
   let new = s ^. _1 . env . EVM.contracts
       -- Q: por que puede cambiar/ agregarse addresses de contratos??
+      -- TODO: chequear usos de contracts para ver cuando se modifica
       -- compute the addresses not present in the old VM via set difference
       diff = keys $ new \\ old
       -- and construct a set to union to the constants table
       diffs = H.fromList [(AbiAddressType, S.fromList $ AbiAddress <$> diff)]
   -- Save the global campaign state (also vm state, but that gets reset before it's used)
-  hasLens .= snd s -- Update the gas estimation
+  hasLens .= snd s 
+  -- Update the gas estimation
   when gasEnabled $ hasLens . gasInfo %= updateGasInfo res []
   -- If there is new coverage, add the transaction list to the corpus
   when (s ^. _2 . newCoverage) $ addToCorpus (s ^. _2 . ncallseqs + 1) res
@@ -254,7 +256,7 @@ callseq ic v w ql = do
   hasLens . newCoverage .= False
   -- Keep track of the number of calls to `callseq`
   hasLens . ncallseqs += 1
-  -- Now we try to parse the return values as solidity constants, and add then to the 'GenDict'
+  -- Now we try to parse the return values as solidity constants, and add them to the 'GenDict'
   types <- use $ hasLens . rTypes
   let results = parse (map (\(t, (vr, _)) -> (t, vr)) res) types
       -- union the return results with the new addresses
@@ -265,10 +267,12 @@ callseq ic v w ql = do
     -- Given a list of transactions and a return typing rule, this checks whether we know the return
     -- type for each function called, and if we do, tries to parse the return value as a value of that
     -- type. It returns a 'GenDict' style HashMap.
-    parse l rt = H.fromList . flip mapMaybe l $ \(x, r) -> case (rt =<< x ^? call . _SolCall . _1, r) of
-      (Just ty, VMSuccess (ConcreteBuffer b)) ->
-        (ty,) . S.fromList . pure <$> runGetOrFail (getAbi ty) (b ^. lazy) ^? _Right . _3
-      _ -> Nothing
+    -- l es una lista de (tx, vmresult), rt es una funcion que dado un function name te devuelve quizas el AbiType que returnea
+    parse l rt = H.fromList . flip mapMaybe l $ 
+      \(x, r) -> case (rt =<< x ^? call . _SolCall . _1, r) of
+        (Just ty, VMSuccess (ConcreteBuffer b)) -> -- ty es el return abi type
+            (ty,) . S.fromList . pure <$> runGetOrFail (getAbi ty) (b ^. lazy) ^? _Right . _3
+        _ -> Nothing
 
 -- | Run a fuzzing campaign given an initial universe state, some tests, and an optional dictionary
 -- to generate calls with. Return the 'Campaign' state once we can't solve or shrink anything.
