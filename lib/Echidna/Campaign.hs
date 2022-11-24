@@ -89,8 +89,6 @@ isSuccess = allOf (tests . traverse . testState) (\case { Passed -> True; Open _
 updateTest :: ( MonadCatch m, MonadRandom m, MonadReader x m
               , Has SolConf x, Has TestConf x, Has TxConf x, Has CampaignConf x, Has DappInfo x)
            => World -> VM -> Maybe (VM, [Tx]) -> EchidnaTest -> m EchidnaTest
-
-
 updateTest w vm (Just (vm', xs)) test = do
   tl <- view (hasLens . testLimit)
   case test ^. testState of
@@ -173,11 +171,12 @@ updateGasInfo ((t, _):ts) tseq gi = updateGasInfo ts (t:tseq) gi
 execTxOptC :: (MonadState x m, Has Campaign x, Has VM x, MonadThrow m) => Tx -> m (VMResult, Int)
 execTxOptC t = do
   let cov = hasLens . coverage
-  og   <- cov <<.= mempty
+  og   <- cov <<.= mempty -- og <- original coverage, it gets replaced with an empty map to record the new coverage
   memo <- use $ hasLens . bcMemo
-  res  <- execTxWith vmExcept (execTxWithCov memo cov) t
+  res  <- execTxWith vmExcept (execTxWithCov memo cov) t -- vmExcept -> function that wraps an exception to known classes
+  -- res <- (VMResult, Int) siendo el int el gas use
   let vmr = getResult $ fst res
-  -- Update the coverage map with the proper binary according to the vm result
+  -- Update all the CoverageInfo in the coverage map with the tx result
   cov %= mapWithKey (\_ s -> DS.map (set _4 vmr) s)
   -- Update the global coverage map with the union of the result just obtained
   cov %= unionWith DS.union og

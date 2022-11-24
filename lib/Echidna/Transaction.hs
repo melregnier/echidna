@@ -36,6 +36,7 @@ import Echidna.Types.Signature (SignatureMap, SolCall, ContractA, FunctionHash, 
 import Echidna.Types.Tx
 import Echidna.Types.World (World(..))
 
+-- Return whether an address appears as self destructed in the VM
 hasSelfdestructed :: (MonadState y m, Has VM y) => Addr -> m Bool
 hasSelfdestructed a = do
   sd <- use $ hasLens . tx . substate . selfdestructs

@@ -14,9 +14,9 @@ type OpIx = Int
 -- Stack size from the EVM
 type FrameCount = Int
 -- Basic coverage information
-type CoverageInfo = (PC, OpIx, FrameCount, TxResult)
+type CoverageInfo = (PC, OpIx, FrameCount, TxResult) -- el TxResult es el correspondiente al resultado de la ejecucion que genero ese CoverageInfo
 -- Map with the coverage information needed for fuzzing and source code printing 
-type CoverageMap = Map ByteString (Set CoverageInfo)
+type CoverageMap = Map ByteString (Set CoverageInfo) -- key: contract bytecode, value: set of all positions in the contract executed at a certain time
 
 -- | Given good point coverage, count unique points.
 coveragePoints :: CoverageMap -> Int

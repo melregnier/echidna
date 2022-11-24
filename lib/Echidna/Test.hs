@@ -102,23 +102,19 @@ createTests m td ts r ss = case m of
 updateOpenTest :: EchidnaTest -> [Tx] -> Int -> (TestValue, Events, TxResult) -> EchidnaTest
 updateOpenTest test txs _ (BoolValue False,es,r) = test { _testState = Large (-1), _testReproducer = txs, _testEvents = es, _testResult = r } 
 updateOpenTest test _   i (BoolValue True,_,_)   = test { _testState = Open (i + 1) } 
-
-
 updateOpenTest test txs i (IntValue v',es,r) = if v' > v then test { _testState = Open (i + 1), _testReproducer = txs, _testValue = IntValue v', _testEvents = es, _testResult = r } 
                                                          else test { _testState = Open (i + 1) }
                                                 where v = case test ^. testValue of
                                                            IntValue x -> x
                                                            _          -> error "Invalid type of value for optimization" 
-
-
 updateOpenTest _ _ _ _                       = error "Invalid type of test"
 
--- | Given a 'SolTest', evaluate it and see if it currently passes.
+-- | Given a 'EchidnaTest', evaluate it and see if it currently passes.
 checkETest :: (MonadReader x m, Has TestConf x, Has TxConf x, Has DappInfo x, MonadState y m, Has VM y, MonadThrow m)
            => EchidnaTest -> m (TestValue, Events, TxResult)
 checkETest test = case test ^. testType of
                   Exploration           -> return (BoolValue True, [], Stop) -- These values are never used
-                  PropertyTest n a      -> checkProperty (n, a)
+                  PropertyTest n a      -> checkProperty (n, a) -- n -> property function name, a -> address of the contract where the property is defined
                   OptimizationTest n a  -> checkOptimization (n, a)
                   AssertionTest dt n a  -> if dt then checkDapptestAssertion (n, a) else checkStatefullAssertion (n, a)
                   CallTest _ f          -> checkCall f

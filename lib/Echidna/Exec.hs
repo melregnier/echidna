@@ -73,7 +73,8 @@ vmExcept :: MonadThrow m => Error -> m ()
 vmExcept e = throwM $ case VMFailure e of {Illegal -> IllegalExec e; _ -> UnknownFailure e}
 
 -- | Given an error handler `onErr`, an execution strategy `executeTx`, and a transaction `tx`,
--- execute that transaction using the given execution strategy, calling `onErr` on errors.
+-- execute that transaction using the given execution strategy, calling `onErr` on errors and
+-- calculating gas use.
 execTxWith :: (MonadState x m, Has VM x) => (Error -> m ()) -> m VMResult -> Tx -> m (VMResult, Int)
 execTxWith onErr executeTx tx' = do
   isSelfDestruct <- hasSelfdestructed (tx' ^. dst)
@@ -87,6 +88,10 @@ execTxWith onErr executeTx tx' = do
     gasLeftAfterTx <- use $ hasLens . state . gas
     checkAndHandleQuery vmBeforeTx vmResult' onErr executeTx tx' gasLeftBeforeTx gasLeftAfterTx
 
+-- Handles the VMResult and returns it along with the gas used in the tx. 
+-- If the tx execution ended with exception, it resets the state if necessary.
+-- If the tx execution halted because it expects a contract or slot, then provide
+-- the resource needed and continue execution.
 checkAndHandleQuery :: (MonadState x m, Has VM x) => VM -> VMResult -> (Error -> m ()) -> m VMResult -> Tx -> EVM.Types.Word -> EVM.Types.Word -> m (VMResult, Int)
 checkAndHandleQuery vmBeforeTx vmResult' onErr executeTx tx' gasLeftBeforeTx gasLeftAfterTx =
         -- Continue transaction whose execution queried a contract or slot
@@ -152,14 +157,14 @@ handleErrorsAndConstruction onErr vmResult' vmBeforeTx tx' = case (vmResult', tx
 execTx :: (MonadState x m, Has VM x, MonadThrow m) => Tx -> m (VMResult, Int)
 execTx = execTxWith vmExcept $ liftSH exec
 
--- | Execute a transaction, logging coverage at every step.
+-- | Execute a transaction, logging coverage at every step executed and updating the VM state.
 execTxWithCov :: (MonadState x m, Has VM x) => BytecodeMemo -> Lens' x CoverageMap -> m VMResult
 execTxWithCov memo l = do
   vm :: VM          <- use hasLens
   cm :: CoverageMap <- use l
-  let (r, vm', cm') = loop vm cm
-  hasLens .= vm'
-  l       .= cm'
+  let (r, vm', cm') = loop vm cm -- r is the VMResult, vm' and cm' are updated
+  hasLens .= vm' -- Update the VM state
+  l       .= cm' -- Update the coverage map
   return r
   where
     -- | Repeatedly exec a step and add coverage until we have an end result
@@ -170,16 +175,16 @@ execTxWithCov memo l = do
 
     -- | Execute one instruction on the EVM
     stepVM :: VM -> VM
-    stepVM = execState exec1
+    stepVM = execState exec1 -- exec1 is defined in EVM and execs 1 step in the EVM
 
     -- | Add current location to the CoverageMap
     addCoverage :: VM -> CoverageMap -> CoverageMap
     addCoverage vm = M.alter
                        (Just . maybe mempty (S.insert $ currentCovLoc vm))
-                       (currentMeta vm)
+                       (currentMeta vm) -- key: contract bytecode
 
     -- | Get the VM's current execution location
-    currentCovLoc vm = (vm ^. state . pc, fromMaybe 0 $ vmOpIx vm, length $ vm ^. frames, Stop)
+    currentCovLoc vm = (vm ^. state . pc, fromMaybe 0 $ vmOpIx vm, length $ vm ^. frames, Stop) -- the tx result is Stop because the tx has not ended yet, it is updated afterwards when the tx result is obtained
 
     -- | Get the current contract's bytecode metadata
     currentMeta vm = fromMaybe (error "no contract information on coverage") $ do

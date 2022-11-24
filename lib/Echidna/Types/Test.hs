@@ -49,8 +49,8 @@ instance Show TestValue where
   show NoValue       = ""
 
 data TestType = PropertyTest Text Addr -- Text -> property function name, Addr -> address of the contract where the property is defined
-              | OptimizationTest Text Addr
-              | AssertionTest Bool SolSignature Addr
+              | OptimizationTest Text Addr -- Text -> optimization property function name, Addr -> address of the contract where the optimization property is defined
+              | AssertionTest Bool SolSignature Addr -- Bool -> whether to use dapp, SolSignature -> the signature where the assert is defined, Addr -> the address of the contract where the assert is defined
               | CallTest Text (DappInfo -> VM -> TestValue) 
               | Exploration
 
