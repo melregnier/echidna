@@ -277,10 +277,10 @@ callseq ic v w ql = do
 -- to generate calls with. Return the 'Campaign' state once we can't solve or shrink anything.
 campaign :: ( MonadCatch m, MonadRandom m, MonadReader x m
             , Has SolConf x, Has TestConf x, Has TxConf x, Has CampaignConf x, Has DappInfo x)
-         => StateT Campaign m a -- ^ Callback to run after each state update (for instrumentation)
+         => StateT Campaign m a -- ^ Callback to run after each state update (for instrumentation) (kind of an UI update based on the campaign)
          -> VM                  -- ^ Initial VM state
          -> World               -- ^ Initial world state
-         -> [EchidnaTest]       -- ^ Tests to evaluate
+         -> [EchidnaTest]       -- ^ Tests to evaluate (could be empty if no properties or assertions or optimization functions have been created in each mode)
          -> Maybe GenDict       -- ^ Optional generation dictionary
          -> [[Tx]]              -- ^ Initial corpus of transactions
          -> m Campaign
@@ -308,11 +308,11 @@ campaign u vm w ts d txs = do
     memo        = makeBytecodeMemo . mapMaybe (viewBuffer . (^. bytecode)) . elems $ (vm ^. env . EVM.contracts)
     step        = runUpdate (updateTest w vm Nothing) >> lift u >> runCampaign
     runCampaign = use (hasLens . tests . to (fmap (view testState))) >>= update
-    update c    = do
+    update t    = do
       CampaignConf tl sof _ q sl _ _ _ _ _ <- view hasLens
       Campaign { _ncallseqs } <- view hasLens <$> get
-      if | sof && any (\case Solved -> True; Failed _ -> True; _ -> False) c -> lift u
-         | any (\case Open  n   -> n < tl; _ -> False) c                       -> callseq ic vm w q >> step
-         | any (\case Large n   -> n < sl; _ -> False) c                       -> step
-         | null c && (q * _ncallseqs) < tl                                     -> callseq ic vm w q >> step
+      if | sof && any (\case Solved -> True; Failed _ -> True; _ -> False) testStates -> lift u
+         | any (\case Open  n   -> n < tl; _ -> False) testStates                       -> callseq ic vm w q >> step
+         | any (\case Large n   -> n < sl; _ -> False) testStates                       -> step
+         | null testStates && (q * _ncallseqs) < tl                                     -> callseq ic vm w q >> step -- case of empty tests, it's an approximate way of defining a limit to the amount of executions with tl
          | otherwise                                                           -> lift u

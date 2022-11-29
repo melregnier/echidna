@@ -47,7 +47,7 @@ ppCoveredCode isHtml sc cs s | s == mempty = "Coverage map is empty"
                    (sc ^. sourceLines)
       -- ^ Collect all the possible lines from all the files
       covLines = srcMapCov sc s cs
-      -- ^ List of covered lines during the fuzzing campaing
+      -- ^ List of covered lines during the fuzzing campaign
       runtimeLinesMap = buildRuntimeLinesMap sc cs
       -- ^ Excludes lines such as comments or blanks
       ppFile (srcPath, srcLines) =
