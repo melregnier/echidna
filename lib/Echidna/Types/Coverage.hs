@@ -17,6 +17,12 @@ type FrameCount = Int
 type CoverageInfo = (PC, OpIx, FrameCount, TxResult) -- el TxResult es el correspondiente al resultado de la ejecucion que genero ese CoverageInfo
 -- Map with the coverage information needed for fuzzing and source code printing 
 type CoverageMap = Map ByteString (Set CoverageInfo) -- key: contract bytecode, value: set of all positions in the contract executed at a certain time
+-- Map with the frequence (amount of times it was covered) of a given path
+type CoveragePathFrequences = Map Path Int
+-- Sequence of PCs that represent the path followed in the code
+type Path = [PC]
+-- Energy used to define the probability of choosing a sequence or transaction
+type Energy = Int
 
 -- | Given good point coverage, count unique points.
 coveragePoints :: CoverageMap -> Int
