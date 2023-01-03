@@ -40,7 +40,7 @@ shrinkSeq f (v,es,r) xs = do
     check xs' = do
       og <- get -- obtain the original state
       res <- traverse_ execTx xs' >> f -- for each tx in the new sequence execute it and finally check if the test still passes
-      put og -- restore original state to what it was
+      put og -- restore original state to what it was (side note: is this necessary? this VM state is not used afterwards. maybe it's for completeness)
       pure res
     shrinkSender x = do
       l <- view (hasLens . sender)

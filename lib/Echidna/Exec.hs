@@ -184,6 +184,7 @@ execTxWithCov memo l = do
                        (currentMeta vm) -- key: contract bytecode
 
     -- | Get the VM's current execution location
+    ---------- Aca tenemos que añadir un log de pc, vmOpIx, frames, vm ^. state . contract, vm ^. state . code
     currentCovLoc vm = (vm ^. state . pc, fromMaybe 0 $ vmOpIx vm, length $ vm ^. frames, Stop) -- the tx result is Stop because the tx has not ended yet, it is updated afterwards when the tx result is obtained
 
     -- | Get the current contract's bytecode metadata

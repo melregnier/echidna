@@ -58,6 +58,8 @@ data Campaign = Campaign { _tests       :: [EchidnaTest]
                            -- ^ Generation dictionary
                          , _newCoverage :: Bool
                            -- ^ Flag to indicate new coverage found
+                         , _currentSequencePath :: SequencePath
+                         , _coverageSequencePathFrequences :: CoverageSequencePathFrequences
                          , _corpus      :: Corpus
                            -- ^ List of transactions with maximum coverage
                          , _ncallseqs   :: Int
