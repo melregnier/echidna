@@ -27,6 +27,7 @@ import Echidna.Types.Tx (TxCall(..), Tx, TxResult(..), call, dst, initialTimesta
 
 import Echidna.Types.Signature (BytecodeMemo, lookupBytecodeMetadata)
 import Echidna.Events (emptyEvents)
+import Echidna.Types.Logger (Logger, StepInfo)
 
 -- | Broad categories of execution failures: reversions, illegal operations, and ???.
 data ErrorClass = RevertE | IllegalE | UnknownE
@@ -141,7 +142,7 @@ handleErrorsAndConstruction onErr vmResult' vmBeforeTx tx' = case (vmResult', tx
     -- contract address, calldata, result and traces.
     hasLens . result ?= vmResult'
     hasLens . state . calldata .= calldataBeforeVMReset
-    hasLens . state . callvalue .= callvalueBeforeVMReset 
+    hasLens . state . callvalue .= callvalueBeforeVMReset
     hasLens . traces .= tracesBeforeVMReset
     hasLens . state . codeContract .= codeContractBeforeVMReset
   (VMFailure x, _) -> onErr x
@@ -157,41 +158,49 @@ handleErrorsAndConstruction onErr vmResult' vmBeforeTx tx' = case (vmResult', tx
 execTx :: (MonadState x m, Has VM x, MonadThrow m) => Tx -> m (VMResult, Int)
 execTx = execTxWith vmExcept $ liftSH exec
 
--- | Execute a transaction, logging coverage at every step executed and updating the VM state.
-execTxWithCov :: (MonadState x m, Has VM x) => BytecodeMemo -> Lens' x CoverageMap -> m VMResult
-execTxWithCov memo l = do
-  vm :: VM          <- use hasLens
-  cm :: CoverageMap <- use l
-  let (r, vm', cm') = loop vm cm -- r is the VMResult, vm' and cm' are updated
-  hasLens .= vm' -- Update the VM state
-  l       .= cm' -- Update the coverage map
-  return r
-  where
-    -- | Repeatedly exec a step and add coverage until we have an end result
-    loop :: VM -> CoverageMap -> (VMResult, VM, CoverageMap)
-    loop vm cm = case _result vm of
-      Nothing  -> loop (stepVM vm) (addCoverage vm cm)
-      Just r   -> (r, vm, cm)
+-- | Execute a transaction, logging coverage at every step.
+execTxWithCov :: (MonadState x m, Has VM x) => BytecodeMemo -> Lens' x CoverageMap -> Lens' x Logger -> m VMResult
+execTxWithCov memo l lensLogger = do
+ vm :: VM          <- use hasLens
+ cm :: CoverageMap <- use l
+ logger :: Logger <- use lensLogger
+ let (r, vm', cm', pathLog) = loop vm cm mempty
+ let txInfoNewValue = (fst $ last $ last logger, pathLog)
+ let seqNewValue = (element (length (last logger) - 1) .~ txInfoNewValue) $ last logger
+ let loggerNewValue = (element (length logger - 1) .~ seqNewValue) logger
+ lensLogger .= loggerNewValue
+ hasLens .= vm'
+ l       .= cm'
+ return r
+ where
+   -- | Repeatedly exec a step and add coverage until we have an end result
+   loop :: VM -> CoverageMap -> [StepInfo] -> (VMResult, VM, CoverageMap, [StepInfo])
+   loop vm cm pathLog = case _result vm of
+     Nothing  -> loop (stepVM vm) (addCoverage vm cm) (pathLog ++ [(vm ^. state . pc, fromMaybe 0 $ vmOpIx vm)])
+     Just r   -> (r, vm, cm, pathLog)
 
-    -- | Execute one instruction on the EVM
-    stepVM :: VM -> VM
-    stepVM = execState exec1 -- exec1 is defined in EVM and execs 1 step in the EVM
 
-    -- | Add current location to the CoverageMap
-    addCoverage :: VM -> CoverageMap -> CoverageMap
-    addCoverage vm = M.alter
-                       (Just . maybe mempty (S.insert $ currentCovLoc vm))
-                       (currentMeta vm) -- key: contract bytecode
+   -- | Execute one instruction on the EVM
+   stepVM :: VM -> VM
+   stepVM = execState exec1 -- exec1 is defined in EVM and execs 1 step in the EVM
 
-    -- | Get the VM's current execution location
-    ---------- Aca tenemos que añadir un log de pc, vmOpIx, frames, vm ^. state . contract, vm ^. state . code
-    currentCovLoc vm = (vm ^. state . pc, fromMaybe 0 $ vmOpIx vm, length $ vm ^. frames, Stop) -- the tx result is Stop because the tx has not ended yet, it is updated afterwards when the tx result is obtained
 
-    -- | Get the current contract's bytecode metadata
-    currentMeta vm = fromMaybe (error "no contract information on coverage") $ do
-      buffer <- vm ^? env . contracts . at (vm ^. state . contract) . _Just . bytecode
-      bc <- viewBuffer buffer
-      pure $ lookupBytecodeMetadata memo bc
+   -- | Add current location to the CoverageMap
+   addCoverage :: VM -> CoverageMap -> CoverageMap
+   addCoverage vm = M.alter
+                      (Just . maybe mempty (S.insert $ currentCovLoc vm))
+                      (currentMeta vm) -- key: contract bytecode
+
+
+   -- | Get the VM's current execution location
+   currentCovLoc vm = (vm ^. state . pc, fromMaybe 0 $ vmOpIx vm, length $ vm ^. frames, Stop) -- the tx result is Stop because the tx has not ended yet, it is updated afterwards when the tx result is obtained
+
+
+   -- | Get the current contract's bytecode metadata
+   currentMeta vm = fromMaybe (error "no contract information on coverage") $ do
+     buffer <- vm ^? env . contracts . at (vm ^. state . contract) . _Just . bytecode
+     bc <- viewBuffer buffer
+     pure $ lookupBytecodeMetadata memo bc
 
 initialVM :: VM
 initialVM = vmForEthrunCreation mempty & block . timestamp .~ litWord initialTimestamp

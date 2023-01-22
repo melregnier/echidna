@@ -15,12 +15,13 @@ import EVM.Types (keccak)
 import Numeric (showHex)
 
 import Echidna.ABI (GenDict, defaultDict)
-import Echidna.Types.Coverage (CoverageMap)
+import Echidna.Types.Coverage (CoverageMap, SequencePath, CoverageSequencePathFrequences)
 import Echidna.Types.Test (EchidnaTest)
 import Echidna.Types.Signature (BytecodeMemo)
 import Echidna.Types.Tx (Tx)
 import Echidna.Types.Corpus
 import Echidna.Mutator.Corpus
+import Echidna.Types.Logger (Logger)
 
 -- | Configuration for running an Echidna 'Campaign'.
 data CampaignConf = CampaignConf { _testLimit     :: Int
@@ -60,6 +61,7 @@ data Campaign = Campaign { _tests       :: [EchidnaTest]
                            -- ^ Flag to indicate new coverage found
                          , _currentSequencePath :: SequencePath
                          , _coverageSequencePathFrequences :: CoverageSequencePathFrequences
+                         , _logger      :: Logger 
                          , _corpus      :: Corpus
                            -- ^ List of transactions with maximum coverage
                          , _ncallseqs   :: Int
@@ -70,7 +72,7 @@ data Campaign = Campaign { _tests       :: [EchidnaTest]
 makeLenses ''Campaign
 
 instance ToJSON Campaign where
-  toJSON (Campaign ts co gi _ _ _ _ _) = object $ ("tests", toJSON $ map format ts)
+  toJSON (Campaign ts co gi _ _ _ _ _ _ _ _) = object $ ("tests", toJSON $ map format ts)
     : ((if co == mempty then [] else [
     ("coverage",) . toJSON . mapKeys (("0x" <>) . (`showHex` "") . keccak) $ toList <$> co]) ++
        [(("maxgas",) . toJSON . toList) gi | gi /= mempty]) where
@@ -80,7 +82,7 @@ instance Has GenDict Campaign where
   hasLens = genDict
 
 defaultCampaign :: Campaign
-defaultCampaign = Campaign mempty mempty mempty defaultDict False mempty 0 mempty
+defaultCampaign = Campaign mempty mempty mempty defaultDict False mempty mempty mempty mempty 0 mempty
 
 defaultTestLimit :: Int
 defaultTestLimit = 50000

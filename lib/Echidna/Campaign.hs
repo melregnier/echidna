@@ -14,6 +14,7 @@ module Echidna.Campaign where
 import Control.Lens
 import Control.Monad (liftM3, replicateM, when, (<=<), ap, unless)
 import Control.Monad.Catch (MonadCatch(..), MonadThrow(..))
+import Control.Monad.IO.Class (MonadIO(..))
 import Control.Monad.Random.Strict (MonadRandom, RandT, evalRandT, getRandomR, uniform, uniformMay)
 import Control.Monad.Reader.Class (MonadReader)
 import Control.Monad.Reader (runReaderT)
@@ -52,6 +53,9 @@ import Echidna.Types.Tx (TxCall(..), Tx(..), TxConf, getResult, src, call, _SolC
 import Echidna.Types.Solidity (SolConf(..), sender)
 import Echidna.Types.World (World)
 import Echidna.Mutator.Corpus
+import UnliftIO (MonadUnliftIO)
+import Echidna.Types.Logger (fppLogger)
+
 
 instance MonadThrow m => MonadThrow (RandT g m) where
   throwM = lift . throwM
@@ -172,8 +176,13 @@ execTxOptC :: (MonadState x m, Has Campaign x, Has VM x, MonadThrow m) => Tx -> 
 execTxOptC t = do
   let cov = hasLens . coverage
   og   <- cov <<.= mempty -- og <- original coverage, it gets replaced with an empty map to record the new coverage
+  -- Add new txInfo to logger
+  let lensLogger = hasLens . logger
+  originalLogger <- use lensLogger
+  let loggerWithNewTxInfo = (element (length originalLogger - 1) .~ (last originalLogger ++ [(t ^. call, [])])) originalLogger
+  lensLogger .= loggerWithNewTxInfo
   memo <- use $ hasLens . bcMemo
-  res  <- execTxWith vmExcept (execTxWithCov memo cov) t -- vmExcept -> function that wraps an exception to known classes
+  res  <- execTxWith vmExcept (execTxWithCov memo cov lensLogger) t -- vmExcept -> function that wraps an exception to known classes
   -- res <- (VMResult, Int) siendo el int el gas use
   let vmr = getResult $ fst res
   -- Update all the CoverageInfo in the coverage map with the tx result
@@ -226,11 +235,14 @@ callseq :: ( MonadCatch m, MonadRandom m, MonadReader x m, MonadState y m
 callseq ic v w ql = do
   -- First, we figure out whether we need to execute with or without coverage optimization and gas info,
   -- and pick our execution function appropriately
+
   coverageEnabled <- isJust <$> view (hasLens . knownCoverage)
   let ef = if coverageEnabled then execTxOptC else execTx
       old = v ^. env . EVM.contracts
   gasEnabled <- view $ hasLens . estimateGas
   -- Then, we get the current campaign state
+  ca' <- use hasLens
+  hasLens . logger .= (ca' ^. logger ++ [[]])
   ca <- use hasLens
   -- Then, we generate the actual transaction in the sequence
   is <- randseq ic ql old w
@@ -275,7 +287,7 @@ callseq ic v w ql = do
 
 -- | Run a fuzzing campaign given an initial universe state, some tests, and an optional dictionary
 -- to generate calls with. Return the 'Campaign' state once we can't solve or shrink anything.
-campaign :: ( MonadCatch m, MonadRandom m, MonadReader x m
+campaign :: ( MonadCatch m, MonadRandom m, MonadReader x m, MonadUnliftIO m
             , Has SolConf x, Has TestConf x, Has TxConf x, Has CampaignConf x, Has DappInfo x)
          => StateT Campaign m a -- ^ Callback to run after each state update (for instrumentation) (kind of an UI update based on the campaign)
          -> VM                  -- ^ Initial VM state
@@ -290,7 +302,7 @@ campaign u vm w ts d txs = do
   let effectiveSeed = fromMaybe (d' ^. defSeed) g
       effectiveGenDict = d' { _defSeed = effectiveSeed }
       d' = fromMaybe defaultDict d
-  execStateT
+  resultCampaign <- execStateT
     (evalRandT runCampaign (mkStdGen effectiveSeed))
     (Campaign
       ts
@@ -298,17 +310,23 @@ campaign u vm w ts d txs = do
       mempty
       effectiveGenDict
       False
+      mempty
+      mempty
+      mempty
       DS.empty
       0
       memo
     )
+  liftIO $ putStrLn $ fppLogger $ resultCampaign ^. logger
+  return resultCampaign
+  
   where
     -- "mapMaybe ..." is to get a list of all contracts
     ic          = (length txs, txs)
     memo        = makeBytecodeMemo . mapMaybe (viewBuffer . (^. bytecode)) . elems $ (vm ^. env . EVM.contracts)
     step        = runUpdate (updateTest w vm Nothing) >> lift u >> runCampaign
     runCampaign = use (hasLens . tests . to (fmap (view testState))) >>= update
-    update t    = do
+    update testStates    = do
       CampaignConf tl sof _ q sl _ _ _ _ _ <- view hasLens
       Campaign { _ncallseqs } <- view hasLens <$> get
       if | sof && any (\case Solved -> True; Failed _ -> True; _ -> False) testStates -> lift u
