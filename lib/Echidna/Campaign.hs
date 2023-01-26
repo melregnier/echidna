@@ -23,7 +23,7 @@ import Control.Monad.Trans (lift)
 import Control.Monad.Trans.Random.Strict (liftCatch)
 import Data.Binary.Get (runGetOrFail)
 import Data.Bool (bool)
-import Data.Map (Map, unionWith, (\\), elems, keys, lookup, insert, mapWithKey)
+import Data.Map (Map, unionWith, (\\), elems, keys, lookup, insert, insertWith, mapWithKey)
 import Data.Maybe (fromMaybe, isJust, mapMaybe)
 import Data.Ord (comparing)
 import Data.Has (Has(..))
@@ -45,7 +45,7 @@ import Echidna.Transaction
 import Echidna.Shrink (shrinkSeq)
 import Echidna.Types.Campaign
 import Echidna.Types.Corpus (InitialCorpus)
-import Echidna.Types.Coverage (coveragePoints)
+import Echidna.Types.Coverage (coveragePoints, ppCoverageSequencePathFrequences)
 import Echidna.Types.Test
 import Echidna.Types.Buffer (viewBuffer)
 import Echidna.Types.Signature (makeBytecodeMemo)
@@ -99,7 +99,7 @@ updateTest w vm (Just (vm', xs)) test = do
     Open i | i >= tl -> case test ^. testType of
                           OptimizationTest _ _ -> pure $ test { _testState = Large (-1) }
                           _                    -> pure $ test { _testState = Passed } -- si intente las suficientes veces, asumo que es unsolvable
-    Open i           -> do r <- evalStateT (checkETest test) vm' 
+    Open i           -> do r <- evalStateT (checkETest test) vm'
                            pure $ updateOpenTest test xs i r
     _                -> updateTest w vm Nothing test
 
@@ -113,7 +113,7 @@ updateTest _ vm Nothing test = do
     Large i | i >= sl -> pure $ test { _testState =  Solved, _testReproducer = x }
     Large i           -> if length x > 1 || any canShrinkTx x
                              then do (txs, val, evs, r) <- evalStateT (shrinkSeq (checkETest test) (v, es, res) x) vm
-                                     pure $ test { _testState = Large (i + 1), _testReproducer = txs, _testEvents = evs, _testResult = r, _testValue = val} 
+                                     pure $ test { _testState = Large (i + 1), _testReproducer = txs, _testEvents = evs, _testResult = r, _testValue = val}
                              else pure $ test { _testState = Solved, _testReproducer = x}
     _                   -> pure test
 
@@ -181,14 +181,21 @@ execTxOptC t = do
   originalLogger <- use lensLogger
   let loggerWithNewTxInfo = (element (length originalLogger - 1) .~ (last originalLogger ++ [(t ^. call, [])])) originalLogger
   lensLogger .= loggerWithNewTxInfo
+  -- Add new tx path to SequencePath
+  let lensCurrentSeqPath = hasLens . currentSequencePath
   memo <- use $ hasLens . bcMemo
-  res  <- execTxWith vmExcept (execTxWithCov memo cov lensLogger) t -- vmExcept -> function that wraps an exception to known classes
+  res  <- execTxWith vmExcept (execTxWithCov memo cov lensLogger lensCurrentSeqPath) t -- vmExcept -> function that wraps an exception to known classes
   -- res <- (VMResult, Int) siendo el int el gas use
   let vmr = getResult $ fst res
   -- Update all the CoverageInfo in the coverage map with the tx result
   cov %= mapWithKey (\_ s -> DS.map (set _4 vmr) s)
   -- Update the global coverage map with the union of the result just obtained
   cov %= unionWith DS.union og
+  -- Update the frequence map with the new SequencePath executed
+  let lensFrequencesSequencePath = hasLens . coverageSequencePathFrequences
+  currentSeqPath <- use lensCurrentSeqPath
+  lensFrequencesSequencePath %= insertWith (+) currentSeqPath 1
+  -- Update new coverage flag and genDict if new coverage was found
   grew <- (== LT) . comparing coveragePoints og <$> use cov
   when grew $ do
     hasLens . genDict %= gaddCalls ([t ^. call] ^.. traverse . _SolCall)
@@ -243,6 +250,8 @@ callseq ic v w ql = do
   -- Then, we get the current campaign state
   ca' <- use hasLens
   hasLens . logger .= (ca' ^. logger ++ [[]])
+  hasLens . currentSequencePath .= []
+
   ca <- use hasLens
   -- Then, we generate the actual transaction in the sequence
   is <- randseq ic ql old w
@@ -258,7 +267,7 @@ callseq ic v w ql = do
       -- and construct a set to union to the constants table
       diffs = H.fromList [(AbiAddressType, S.fromList $ AbiAddress <$> diff)]
   -- Save the global campaign state (also vm state, but that gets reset before it's used)
-  hasLens .= snd s 
+  hasLens .= snd s
   -- Update the gas estimation
   when gasEnabled $ hasLens . gasInfo %= updateGasInfo res []
   -- If there is new coverage, add the transaction list to the corpus
@@ -279,7 +288,7 @@ callseq ic v w ql = do
     -- type for each function called, and if we do, tries to parse the return value as a value of that
     -- type. It returns a 'GenDict' style HashMap.
     -- l es una lista de (tx, vmresult), rt es una funcion que dado un function name te devuelve quizas el AbiType que returnea
-    parse l rt = H.fromList . flip mapMaybe l $ 
+    parse l rt = H.fromList . flip mapMaybe l $
       \(x, r) -> case (rt =<< x ^? call . _SolCall . _1, r) of
         (Just ty, VMSuccess (ConcreteBuffer b)) -> -- ty es el return abi type
             (ty,) . S.fromList . pure <$> runGetOrFail (getAbi ty) (b ^. lazy) ^? _Right . _3
@@ -317,9 +326,11 @@ campaign u vm w ts d txs = do
       0
       memo
     )
-  liftIO $ putStrLn $ fppLogger $ resultCampaign ^. logger
+  -- print logger
+  -- liftIO $ putStrLn $ fppLogger $ resultCampaign ^. logger
+  liftIO $ putStrLn $ ppCoverageSequencePathFrequences $ resultCampaign ^. coverageSequencePathFrequences
   return resultCampaign
-  
+
   where
     -- "mapMaybe ..." is to get a list of all contracts
     ic          = (length txs, txs)

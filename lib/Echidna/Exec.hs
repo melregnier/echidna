@@ -22,7 +22,7 @@ import qualified Data.Set as S
 
 import Echidna.Transaction
 import Echidna.Types.Buffer (viewBuffer)
-import Echidna.Types.Coverage (CoverageMap)
+import Echidna.Types.Coverage (CoverageMap, SequencePath)
 import Echidna.Types.Tx (TxCall(..), Tx, TxResult(..), call, dst, initialTimestamp, initialBlockNumber)
 
 import Echidna.Types.Signature (BytecodeMemo, lookupBytecodeMetadata)
@@ -159,16 +159,20 @@ execTx :: (MonadState x m, Has VM x, MonadThrow m) => Tx -> m (VMResult, Int)
 execTx = execTxWith vmExcept $ liftSH exec
 
 -- | Execute a transaction, logging coverage at every step.
-execTxWithCov :: (MonadState x m, Has VM x) => BytecodeMemo -> Lens' x CoverageMap -> Lens' x Logger -> m VMResult
-execTxWithCov memo l lensLogger = do
+execTxWithCov :: (MonadState x m, Has VM x) => BytecodeMemo -> Lens' x CoverageMap -> Lens' x Logger 
+                                            -> Lens' x SequencePath -> m VMResult
+execTxWithCov memo l lensLogger lensCurrentSeqPath = do
  vm :: VM          <- use hasLens
  cm :: CoverageMap <- use l
  logger :: Logger <- use lensLogger
+ currentPath :: SequencePath <- use lensCurrentSeqPath
  let (r, vm', cm', pathLog) = loop vm cm mempty
  let txInfoNewValue = (fst $ last $ last logger, pathLog)
  let seqNewValue = (element (length (last logger) - 1) .~ txInfoNewValue) $ last logger
  let loggerNewValue = (element (length logger - 1) .~ seqNewValue) logger
  lensLogger .= loggerNewValue
+ -- 
+ lensCurrentSeqPath .= currentPath ++ [pathLog]
  hasLens .= vm'
  l       .= cm'
  return r
@@ -176,7 +180,7 @@ execTxWithCov memo l lensLogger = do
    -- | Repeatedly exec a step and add coverage until we have an end result
    loop :: VM -> CoverageMap -> [StepInfo] -> (VMResult, VM, CoverageMap, [StepInfo])
    loop vm cm pathLog = case _result vm of
-     Nothing  -> loop (stepVM vm) (addCoverage vm cm) (pathLog ++ [(vm ^. state . pc, fromMaybe 0 $ vmOpIx vm)])
+     Nothing  -> loop (stepVM vm) (addCoverage vm cm) (pathLog ++ [fromMaybe 0 $ vmOpIx vm])
      Just r   -> (r, vm, cm, pathLog)
 
 

@@ -7,12 +7,12 @@
 module Echidna.Types.Logger where
 
 
-import Echidna.Types.Coverage (PC, OpIx)
+import Echidna.Types.Coverage (OpIx)
 import Echidna.Types.Tx (TxCall)
 import Echidna.Pretty (ppTxCall)
 
 
-type StepInfo = (PC, OpIx)
+type StepInfo = OpIx
 
 type TxInfo = (TxCall, [StepInfo])
 
@@ -24,15 +24,13 @@ fppLogger :: Logger -> String
 fppLogger x = "{\n" ++ ppLogger x ++ "\n }"
 
 ppLogger :: Logger -> String
-ppLogger (x:xs) = fppSequence x ++ ppLogger xs
-ppLogger [] = ""
+ppLogger = concatMap fppSequence
 
 fppSequence :: SequenceInfo -> String
 fppSequence x = "  seq[\n" ++ ppSequence x ++ "\n ] \n"
 
 ppSequence :: [TxInfo] -> String
-ppSequence (x:xs) = fppTxInfo x ++ ppSequence xs
-ppSequence [] = ""
+ppSequence = concatMap fppTxInfo
 
 fppTxInfo :: TxInfo -> String
 fppTxInfo x = "     tx[" ++ ppTxInfo x ++ "]\n"
@@ -49,4 +47,4 @@ ppPath (x:xs) = fppStepInfo x ++ ", " ++ ppPath xs
 ppPath [] = ""
 
 fppStepInfo :: StepInfo -> String
-fppStepInfo (x, y) = "(PC: " ++ show x ++ ", OpIx: " ++ show y ++ ")"
+fppStepInfo x = "(OpIx: " ++ show x ++ ")"

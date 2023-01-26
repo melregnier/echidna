@@ -2,10 +2,11 @@ module Echidna.Types.Coverage where
 
 import Control.Lens
 import Data.Set (Set, size, map)
-import Data.ByteString (ByteString) 
-import Data.Map.Strict (Map)
+import Data.ByteString (ByteString)
+import Data.Map.Strict (Map, foldrWithKey)
 
 import Echidna.Types.Tx (TxResult)
+import qualified Data.HashMap.Internal.Strict as Map
 
 -- Program Counter directly obtained from the EVM
 type PC = Int
@@ -35,4 +36,21 @@ coveragePoints = sum . fmap size
 scoveragePoints :: CoverageMap -> Int
 scoveragePoints = sum . fmap (size . Data.Set.map (view _1))
 
+ppCoverageSequencePathFrequences :: Map SequencePath Int -> String
+ppCoverageSequencePathFrequences = foldrWithKey (\k v acc -> ppSequencePath k ++ "\nvalue : " ++ show v ++ "\n" ++ acc) ""
+
+ppSequencePath :: [TransactionPath] -> String
+ppSequencePath x = "seq[\n" ++ rppSequencePath x ++ "]\n"
+
+rppSequencePath :: [TransactionPath] -> String
+rppSequencePath = concatMap ppTransactionPath
+
+ppTransactionPath :: [PC] -> String
+ppTransactionPath x = "  tx[" ++ rppTransactionPath x ++ "]\n"
+
+rppTransactionPath :: [PC] -> String
+rppTransactionPath = concatMap ppPC
+
+ppPC :: PC -> String
+ppPC x = show x ++ ", "
 
