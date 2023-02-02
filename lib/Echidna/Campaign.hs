@@ -45,7 +45,7 @@ import Echidna.Transaction
 import Echidna.Shrink (shrinkSeq)
 import Echidna.Types.Campaign
 import Echidna.Types.Corpus (InitialCorpus)
-import Echidna.Types.Coverage (coveragePoints, ppCoverageSequencePathFrequences)
+import Echidna.Types.Coverage (coveragePoints, ppCoverageSequenceFrequences, SequenceCoverage)
 import Echidna.Types.Test
 import Echidna.Types.Buffer (viewBuffer)
 import Echidna.Types.Signature (makeBytecodeMemo)
@@ -54,7 +54,6 @@ import Echidna.Types.Solidity (SolConf(..), sender)
 import Echidna.Types.World (World)
 import Echidna.Mutator.Corpus
 import UnliftIO (MonadUnliftIO)
-import Echidna.Types.Logger (fppLogger)
 
 
 instance MonadThrow m => MonadThrow (RandT g m) where
@@ -176,25 +175,20 @@ execTxOptC :: (MonadState x m, Has Campaign x, Has VM x, MonadThrow m) => Tx -> 
 execTxOptC t = do
   let cov = hasLens . coverage
   og   <- cov <<.= mempty -- og <- original coverage, it gets replaced with an empty map to record the new coverage
-  -- Add new txInfo to logger
-  let lensLogger = hasLens . logger
-  originalLogger <- use lensLogger
-  let loggerWithNewTxInfo = (element (length originalLogger - 1) .~ (last originalLogger ++ [(t ^. call, [])])) originalLogger
-  lensLogger .= loggerWithNewTxInfo
-  -- Add new tx path to SequencePath
-  let lensCurrentSeqPath = hasLens . currentSequencePath
+  -- Add new tx path to SequenceCoverage
+  let lensCurrentSequenceCoverage = hasLens . currentSequenceCoverage
   memo <- use $ hasLens . bcMemo
-  res  <- execTxWith vmExcept (execTxWithCov memo cov lensLogger lensCurrentSeqPath) t -- vmExcept -> function that wraps an exception to known classes
+  res  <- execTxWith vmExcept (execTxWithCov memo cov lensCurrentSequenceCoverage) t -- vmExcept -> function that wraps an exception to known classes
   -- res <- (VMResult, Int) siendo el int el gas use
   let vmr = getResult $ fst res
   -- Update all the CoverageInfo in the coverage map with the tx result
   cov %= mapWithKey (\_ s -> DS.map (set _4 vmr) s)
   -- Update the global coverage map with the union of the result just obtained
   cov %= unionWith DS.union og
-  -- Update the frequence map with the new SequencePath executed
-  let lensFrequencesSequencePath = hasLens . coverageSequencePathFrequences
-  currentSeqPath <- use lensCurrentSeqPath
-  lensFrequencesSequencePath %= insertWith (+) currentSeqPath 1
+  -- Update the frequence map with the new SequenceCoverage executed
+  let lensCoverageFrequencesSequence = hasLens . coverageSequenceFrequences
+  currentSeqCoverage <- use lensCurrentSequenceCoverage
+  lensCoverageFrequencesSequence %= insertWith (+) currentSeqCoverage 1
   -- Update new coverage flag and genDict if new coverage was found
   grew <- (== LT) . comparing coveragePoints og <$> use cov
   when grew $ do
@@ -203,8 +197,8 @@ execTxOptC t = do
   return res
 
 -- | Given a list of transactions in the corpus, save them discarding reverted transactions
-addToCorpus :: (MonadState s m, Has Campaign s) => Int -> [(Tx, (VMResult, Int))] -> m ()
-addToCorpus n res = unless (null rtxs) $ hasLens . corpus %= DS.insert (toInteger n, rtxs)
+addToCorpus :: (MonadState s m, Has Campaign s) => SequenceCoverage -> [(Tx, (VMResult, Int))] -> m ()
+addToCorpus sequenceCoverage res = unless (null rtxs) $ hasLens . corpus %= DS.insert (sequenceCoverage, rtxs)
   where rtxs = fst <$> res
 
 -- | Generate a new sequences of transactions, either using the corpus or with randomly created transactions
@@ -229,10 +223,12 @@ randseq (n,txs) ql o w = do -- txs es una lista de lista de transacciones
     cmut <- if ql == 1 then seqMutatorsStateless (fromConsts cs) else seqMutatorsStateful (fromConsts cs) -- las ctes de mutacion determinan que tan probable es elegir un mutator
     -- Fetch the mutator
     let mut = getCorpusMutation cmut
+    let lensFreqMap = hasLens . coverageSequenceFrequences
+    freqMap <- use lensFreqMap
     if DS.null ctxs then
       return gtxs      -- Use the generated random transactions
     else
-      mut ql ctxs gtxs -- Apply the mutator
+      mut ql ctxs gtxs freqMap-- Apply the mutator
 
 -- | Given an initial 'VM' and 'World' state and a number of calls to generate, generate that many calls,
 -- constantly checking if we've solved any tests or can shrink known solves. Update coverage as a result
@@ -248,10 +244,6 @@ callseq ic v w ql = do
       old = v ^. env . EVM.contracts
   gasEnabled <- view $ hasLens . estimateGas
   -- Then, we get the current campaign state
-  ca' <- use hasLens
-  hasLens . logger .= (ca' ^. logger ++ [[]])
-  hasLens . currentSequencePath .= []
-
   ca <- use hasLens
   -- Then, we generate the actual transaction in the sequence
   is <- randseq ic ql old w
@@ -271,9 +263,11 @@ callseq ic v w ql = do
   -- Update the gas estimation
   when gasEnabled $ hasLens . gasInfo %= updateGasInfo res []
   -- If there is new coverage, add the transaction list to the corpus
-  when (s ^. _2 . newCoverage) $ addToCorpus (s ^. _2 . ncallseqs + 1) res
+  when (s ^. _2 . newCoverage) $ addToCorpus (s ^. _2 . currentSequenceCoverage) res
   -- Reset the new coverage flag
   hasLens . newCoverage .= False
+  -- Reset the current sequence path
+  hasLens . currentSequenceCoverage .= mempty 
   -- Keep track of the number of calls to `callseq`
   hasLens . ncallseqs += 1
   -- Now we try to parse the return values as solidity constants, and add them to the 'GenDict'
@@ -321,14 +315,11 @@ campaign u vm w ts d txs = do
       False
       mempty
       mempty
-      mempty
       DS.empty
       0
       memo
     )
-  -- print logger
-  -- liftIO $ putStrLn $ fppLogger $ resultCampaign ^. logger
-  liftIO $ putStrLn $ ppCoverageSequencePathFrequences $ resultCampaign ^. coverageSequencePathFrequences
+  -- liftIO $ putStrLn $ ppCoverageSequenceFrequences $ resultCampaign ^. coverageSequenceFrequences
   return resultCampaign
 
   where

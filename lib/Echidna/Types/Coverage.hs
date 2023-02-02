@@ -1,7 +1,7 @@
 module Echidna.Types.Coverage where
 
 import Control.Lens
-import Data.Set (Set, size, map)
+import Data.Set (Set, size, map, foldr)
 import Data.ByteString (ByteString)
 import Data.Map.Strict (Map, foldrWithKey)
 
@@ -18,12 +18,10 @@ type FrameCount = Int
 type CoverageInfo = (PC, OpIx, FrameCount, TxResult) -- el TxResult es el correspondiente al resultado de la ejecucion que genero ese CoverageInfo
 -- Map with the coverage information needed for fuzzing and source code printing 
 type CoverageMap = Map ByteString (Set CoverageInfo) -- key: contract bytecode, value: set of all positions in the contract executed at a certain time
--- Map with the frequence (amount of times it was covered) of a given sequence path
-type CoverageSequencePathFrequences = Map SequencePath Int
--- A transaction path is determined by the sequence of PCs executed
-type TransactionPath = [PC]
--- A sequence path is determined by the list of transaction paths executed
-type SequencePath = [TransactionPath]
+-- Map with the frequence (amount of times it was covered) of a given sequence 
+type CoverageSequenceFrequences = Map SequenceCoverage Int
+-- A sequence coverage is determined by the set of PC executed for a given contract
+type SequenceCoverage = Map ByteString (Set PC)
 -- Energy used to define the probability of choosing a sequence or transaction
 type Energy = Int
 
@@ -36,20 +34,20 @@ coveragePoints = sum . fmap size
 scoveragePoints :: CoverageMap -> Int
 scoveragePoints = sum . fmap (size . Data.Set.map (view _1))
 
-ppCoverageSequencePathFrequences :: Map SequencePath Int -> String
-ppCoverageSequencePathFrequences = foldrWithKey (\k v acc -> ppSequencePath k ++ "\nvalue : " ++ show v ++ "\n" ++ acc) ""
+ppCoverageSequenceFrequences :: Map SequenceCoverage Int -> String
+ppCoverageSequenceFrequences = foldrWithKey (\k v acc -> ppSequence k ++ "\nvalue : " ++ show v ++ "\n" ++ acc) ""
 
-ppSequencePath :: [TransactionPath] -> String
-ppSequencePath x = "seq[\n" ++ rppSequencePath x ++ "]\n"
+ppSequence :: SequenceCoverage -> String
+ppSequence x = "{\n" ++ rppSequence x ++ "\n}\n"
 
-rppSequencePath :: [TransactionPath] -> String
-rppSequencePath = concatMap ppTransactionPath
+rppSequence :: Map ByteString (Set PC) -> String
+rppSequence = foldrWithKey (\contract v acc -> "contract: " ++ show contract ++ "\nvalue : " ++ ppSetPC v ++ "\n" ++ acc) ""
 
-ppTransactionPath :: [PC] -> String
-ppTransactionPath x = "  tx[" ++ rppTransactionPath x ++ "]\n"
+ppSetPC :: Set PC -> String
+ppSetPC x = "setPC(" ++ rppSetPC x ++ ")\n"
 
-rppTransactionPath :: [PC] -> String
-rppTransactionPath = concatMap ppPC
+rppSetPC :: Set PC -> String
+rppSetPC = Data.Set.foldr (\pc accum -> ppPC pc ++ accum) ""
 
 ppPC :: PC -> String
 ppPC x = show x ++ ", "

@@ -22,12 +22,11 @@ import qualified Data.Set as S
 
 import Echidna.Transaction
 import Echidna.Types.Buffer (viewBuffer)
-import Echidna.Types.Coverage (CoverageMap, SequencePath)
+import Echidna.Types.Coverage (CoverageMap, SequenceCoverage)
 import Echidna.Types.Tx (TxCall(..), Tx, TxResult(..), call, dst, initialTimestamp, initialBlockNumber)
 
 import Echidna.Types.Signature (BytecodeMemo, lookupBytecodeMetadata)
 import Echidna.Events (emptyEvents)
-import Echidna.Types.Logger (Logger, StepInfo)
 
 -- | Broad categories of execution failures: reversions, illegal operations, and ???.
 data ErrorClass = RevertE | IllegalE | UnknownE
@@ -159,29 +158,24 @@ execTx :: (MonadState x m, Has VM x, MonadThrow m) => Tx -> m (VMResult, Int)
 execTx = execTxWith vmExcept $ liftSH exec
 
 -- | Execute a transaction, logging coverage at every step.
-execTxWithCov :: (MonadState x m, Has VM x) => BytecodeMemo -> Lens' x CoverageMap -> Lens' x Logger 
-                                            -> Lens' x SequencePath -> m VMResult
-execTxWithCov memo l lensLogger lensCurrentSeqPath = do
+execTxWithCov :: (MonadState x m, Has VM x) => BytecodeMemo -> Lens' x CoverageMap
+                                            -> Lens' x SequenceCoverage -> m VMResult
+execTxWithCov memo l lensCurrentSeqCoverage = do
  vm :: VM          <- use hasLens
  cm :: CoverageMap <- use l
- logger :: Logger <- use lensLogger
- currentPath :: SequencePath <- use lensCurrentSeqPath
- let (r, vm', cm', pathLog) = loop vm cm mempty
- let txInfoNewValue = (fst $ last $ last logger, pathLog)
- let seqNewValue = (element (length (last logger) - 1) .~ txInfoNewValue) $ last logger
- let loggerNewValue = (element (length logger - 1) .~ seqNewValue) logger
- lensLogger .= loggerNewValue
+ currentCoverage :: SequenceCoverage <- use lensCurrentSeqCoverage
+ let (r, vm', cm', newSequenceCoverage) = loop vm cm currentCoverage
  -- 
- lensCurrentSeqPath .= currentPath ++ [pathLog]
+ lensCurrentSeqCoverage .= newSequenceCoverage
  hasLens .= vm'
  l       .= cm'
  return r
  where
    -- | Repeatedly exec a step and add coverage until we have an end result
-   loop :: VM -> CoverageMap -> [StepInfo] -> (VMResult, VM, CoverageMap, [StepInfo])
-   loop vm cm pathLog = case _result vm of
-     Nothing  -> loop (stepVM vm) (addCoverage vm cm) (pathLog ++ [fromMaybe 0 $ vmOpIx vm])
-     Just r   -> (r, vm, cm, pathLog)
+   loop :: VM -> CoverageMap -> SequenceCoverage -> (VMResult, VM, CoverageMap, SequenceCoverage)
+   loop vm cm sequenceCoverage = case _result vm of
+     Nothing  -> loop (stepVM vm) (addCoverage vm cm) (addSequenceCoverage vm sequenceCoverage)
+     Just r   -> (r, vm, cm, sequenceCoverage)
 
 
    -- | Execute one instruction on the EVM
@@ -195,6 +189,10 @@ execTxWithCov memo l lensLogger lensCurrentSeqPath = do
                       (Just . maybe mempty (S.insert $ currentCovLoc vm))
                       (currentMeta vm) -- key: contract bytecode
 
+   addSequenceCoverage :: VM -> SequenceCoverage -> SequenceCoverage
+   addSequenceCoverage vm = M.alter
+                              (Just . maybe mempty (S.insert $ vm ^. state . pc)) -- add to set the pc
+                              (currentMeta vm) -- key: contract bytecode
 
    -- | Get the VM's current execution location
    currentCovLoc vm = (vm ^. state . pc, fromMaybe 0 $ vmOpIx vm, length $ vm ^. frames, Stop) -- the tx result is Stop because the tx has not ended yet, it is updated afterwards when the tx result is obtained
