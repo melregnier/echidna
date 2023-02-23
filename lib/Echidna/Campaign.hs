@@ -23,7 +23,7 @@ import Control.Monad.Trans (lift)
 import Control.Monad.Trans.Random.Strict (liftCatch)
 import Data.Binary.Get (runGetOrFail)
 import Data.Bool (bool)
-import Data.Map (Map, unionWith, (\\), elems, keys, lookup, insert, insertWith, mapWithKey)
+import Data.Map (Map, unionWith, (\\), elems, keys, lookup, insert, insertWith, mapWithKey, findWithDefault)
 import Data.Maybe (fromMaybe, isJust, mapMaybe)
 import Data.Ord (comparing)
 import Data.Has (Has(..))
@@ -44,8 +44,8 @@ import Echidna.Test
 import Echidna.Transaction
 import Echidna.Shrink (shrinkSeq)
 import Echidna.Types.Campaign
-import Echidna.Types.Corpus (InitialCorpus)
-import Echidna.Types.Coverage (coveragePoints, ppCoverageSequenceFrequences, SequenceCoverage)
+import Echidna.Types.Corpus (InitialCorpus, Corpus)
+import Echidna.Types.Coverage (coveragePoints, ppCoverageSequenceFrequences, SequenceCoverage, CoverageSequenceFrequences, ppCorpusWithEnergies)
 import Echidna.Types.Test
 import Echidna.Types.Buffer (viewBuffer)
 import Echidna.Types.Signature (makeBytecodeMemo)
@@ -185,10 +185,6 @@ execTxOptC t = do
   cov %= mapWithKey (\_ s -> DS.map (set _4 vmr) s)
   -- Update the global coverage map with the union of the result just obtained
   cov %= unionWith DS.union og
-  -- Update the frequence map with the new SequenceCoverage executed
-  let lensCoverageFrequencesSequence = hasLens . coverageSequenceFrequences
-  currentSeqCoverage <- use lensCurrentSequenceCoverage
-  lensCoverageFrequencesSequence %= insertWith (+) currentSeqCoverage 1
   -- Update new coverage flag and genDict if new coverage was found
   grew <- (== LT) . comparing coveragePoints og <$> use cov
   when grew $ do
@@ -262,8 +258,12 @@ callseq ic v w ql = do
   hasLens .= snd s
   -- Update the gas estimation
   when gasEnabled $ hasLens . gasInfo %= updateGasInfo res []
+  -- Update the frequence map with the new SequenceCoverage executed
+  let lensCoverageFrequencesSequence = hasLens . coverageSequenceFrequences
+  let currentSeqCoverage = s ^. _2 . currentSequenceCoverage
+  lensCoverageFrequencesSequence %= insertWith (+) currentSeqCoverage 1
   -- If there is new coverage, add the transaction list to the corpus
-  when (s ^. _2 . newCoverage) $ addToCorpus (s ^. _2 . currentSequenceCoverage) res
+  when (s ^. _2 . newCoverage) $ addToCorpus currentSeqCoverage res
   -- Reset the new coverage flag
   hasLens . newCoverage .= False
   -- Reset the current sequence path
@@ -287,6 +287,11 @@ callseq ic v w ql = do
         (Just ty, VMSuccess (ConcreteBuffer b)) -> -- ty es el return abi type
             (ty,) . S.fromList . pure <$> runGetOrFail (getAbi ty) (b ^. lazy) ^? _Right . _3
         _ -> Nothing
+
+-- Compute energies and return sequence co
+computeEnergies2 :: Corpus -> CoverageSequenceFrequences -> [(SequenceCoverage, Rational)]
+computeEnergies2 corpus coverageSeqFreq =
+  map (\(sequenceCoverage, txs) -> (sequenceCoverage, 1 / fromIntegral (findWithDefault 0 sequenceCoverage coverageSeqFreq))) $ DS.toList corpus
 
 -- | Run a fuzzing campaign given an initial universe state, some tests, and an optional dictionary
 -- to generate calls with. Return the 'Campaign' state once we can't solve or shrink anything.
@@ -319,7 +324,12 @@ campaign u vm w ts d txs = do
       0
       memo
     )
-  -- liftIO $ putStrLn $ ppCoverageSequenceFrequences $ resultCampaign ^. coverageSequenceFrequences
+  CampaignConf tl sof _ q sl _ _ _ _ _ <- view hasLens
+  liftIO $ putStrLn $ ppCoverageSequenceFrequences $ resultCampaign ^. coverageSequenceFrequences
+  liftIO $ putStrLn $ "\nSecuencias ejecutadas: " ++ show (resultCampaign ^. ncallseqs)
+  liftIO $ putStrLn $ "\nTest limit: " ++ show tl
+  liftIO $ putStrLn $ "\nShrink limit: " ++ show sl
+  liftIO $ putStrLn $ "Corpus with energies: " ++ ppCorpusWithEnergies (computeEnergies2 (resultCampaign ^. corpus) (resultCampaign ^. coverageSequenceFrequences))
   return resultCampaign
 
   where

@@ -7,6 +7,7 @@ import Data.Map.Strict (Map, foldrWithKey)
 
 import Echidna.Types.Tx (TxResult)
 import qualified Data.HashMap.Internal.Strict as Map
+import Documentation.SBV.Examples.WeakestPreconditions.Length (LenS(xs))
 
 -- Program Counter directly obtained from the EVM
 type PC = Int
@@ -52,3 +53,6 @@ rppSetPC = Data.Set.foldr (\pc accum -> ppPC pc ++ accum) ""
 ppPC :: PC -> String
 ppPC x = show x ++ ", "
 
+ppCorpusWithEnergies :: [(SequenceCoverage, Rational)] -> String
+ppCorpusWithEnergies [] = ""
+ppCorpusWithEnergies ((seqCov, energy):rest) = "( sequence coverage: " ++ ppSequence seqCov ++ ", \nenergy: " ++ show energy ++ "),\n" ++ ppCorpusWithEnergies rest
