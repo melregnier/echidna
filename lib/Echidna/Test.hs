@@ -102,27 +102,26 @@ createTests m td ts r ss = case m of
 updateOpenTest :: EchidnaTest -> [Tx] -> Int -> (TestValue, Events, TxResult) -> EchidnaTest
 updateOpenTest test txs _ (BoolValue False,es,r) = test { _testState = Large (-1), _testReproducer = txs, _testEvents = es, _testResult = r } 
 updateOpenTest test _   i (BoolValue True,_,_)   = test { _testState = Open (i + 1) } 
-
-
 updateOpenTest test txs i (IntValue v',es,r) = if v' > v then test { _testState = Open (i + 1), _testReproducer = txs, _testValue = IntValue v', _testEvents = es, _testResult = r } 
                                                          else test { _testState = Open (i + 1) }
                                                 where v = case test ^. testValue of
                                                            IntValue x -> x
                                                            _          -> error "Invalid type of value for optimization" 
-
-
 updateOpenTest _ _ _ _                       = error "Invalid type of test"
 
--- | Given a 'SolTest', evaluate it and see if it currently passes.
+-- | Given a 'EchidnaTest', evaluate it and see if it currently passes.
 checkETest :: (MonadReader x m, Has TestConf x, Has TxConf x, Has DappInfo x, MonadState y m, Has VM y, MonadThrow m)
            => EchidnaTest -> m (TestValue, Events, TxResult)
 checkETest test = case test ^. testType of
                   Exploration           -> return (BoolValue True, [], Stop) -- These values are never used
-                  PropertyTest n a      -> checkProperty (n, a)
+                  PropertyTest n a      -> checkProperty (n, a) -- n -> property function name, a -> address of the contract where the property is defined
                   OptimizationTest n a  -> checkOptimization (n, a)
                   AssertionTest dt n a  -> if dt then checkDapptestAssertion (n, a) else checkStatefullAssertion (n, a)
                   CallTest _ f          -> checkCall f
 
+-- Given an echidna property, returns whether it passed or not, the events of the execution of the property and the result
+-- of the transaction that executed the property. The property is checked only if the last transaction executed was
+-- successful.
 checkProperty :: (MonadReader x m, Has TestConf x, Has TxConf x, Has DappInfo x, MonadState y m, Has VM y, MonadThrow m)
            => (Text, Addr) -> m (TestValue, Events, TxResult)
 checkProperty t = do
@@ -131,14 +130,15 @@ checkProperty t = do
       Just (VMSuccess _) -> checkProperty' t
       _                  -> return (BoolValue True, [], Stop) -- These values are never used
 
-
+-- Runs in a transaction the given function name in the given contract address without any arguments, using as sender the one indicated in the given
+-- map of sender address per contract address. Returns the previous and new VM state after executing the transaction.
 runTx :: (MonadReader x m, MonadState y m, Has VM y, Has TxConf x, MonadThrow m)
            => Text -> (Addr -> Addr) -> Addr -> m (y, VM)
-runTx f s a = do
+runTx f s a = do -- f is the name of the function to execute, s is the map of sender addresses given a contract address, a is the address of the function contract
   vm <- get -- save EVM state
   -- Our test is a regular user-defined test, we exec it and check the result
   g <- view (hasLens . propGas)
-  _  <- execTx $ basicTx f [] (s a) a g (0, 0)
+  _  <- execTx $ basicTx f [] (s a) a g (0, 0) -- runs the tx with empty parameters using the correct sender and no block/time delay
   vm' <- use hasLens
   return (vm, vm')
 
@@ -146,13 +146,13 @@ runTx f s a = do
 -- | Given a property test, evaluate it and see if it currently passes.
 checkProperty' :: (MonadReader x m, Has TestConf x, Has TxConf x, Has DappInfo x, MonadState y m, Has VM y, MonadThrow m)
            => (Text, Addr) -> m (TestValue, Events, TxResult)
-checkProperty' (f,a) = do
+checkProperty' (f,a) = do -- f is the function name of the property, a is the address of the property
   dappInfo <- view hasLens
-  TestConf p s <- view hasLens
-  (vm, vm') <- runTx f s a
-  b  <- gets $ p f . getter
+  TestConf p s <- view hasLens -- s -> the map of sender addresses given a contract address
+  (vm, vm') <- runTx f s a -- run property
+  b  <- gets $ p f . getter -- b <- if property just passed
   put vm -- restore EVM state
-  pure (BoolValue b, extractEvents dappInfo vm', getResultFromVM vm')
+  pure (BoolValue b, extractEvents dappInfo vm', getResultFromVM vm') -- return if property passed, the events and the result of the tx that executed the property
 
 --- | Extract a test value from an execution.
 getIntFromResult :: Maybe VMResult -> TestValue

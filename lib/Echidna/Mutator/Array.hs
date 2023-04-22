@@ -8,6 +8,7 @@ import qualified Data.ListLike as LL
 
 -- | A list of mutators to randomly select to perform a mutation of list-like values
 listMutators :: (LL.ListLike f i, MonadRandom m) => m (f -> m f)
+-- fromList toma una weighted list de valores con un weight non-zero asociado
 listMutators = fromList [(return, 1), (expandRandList, 10), (deleteRandList, 10), (swapRandList, 10)]
 
 -- | Mutate a list-like data structure using a list of mutators
@@ -24,6 +25,8 @@ mutateLL mn fs vs = do
 replaceAt :: LL.ListLike f i => i -> f -> Int -> f
 replaceAt i f n = LL.take n f <> LL.cons i (LL.drop (n + 1) f)
 
+-- Dada una list-like, un indice k desde donde quiero expandirla y la cantidad t de elementos que quiero agregarle,
+-- repite el elemento kesimo t veces en la posicion correspondiente.
 expandAt :: LL.ListLike f i => f -> Int -> Int -> f
 expandAt xs k t =
   case LL.uncons xs of
@@ -32,6 +35,8 @@ expandAt xs k t =
                    then LL.replicate t y <> ys
                    else LL.cons y (expandAt ys (k - 1) t)
 
+-- Elige un elemento random de la list-like el cual va a repetir una cantidad random de veces,
+-- siempre que la list-like tenga longitud entre 1 y 32.
 expandRandList :: (LL.ListLike f i, MonadRandom m) => f -> m f
 expandRandList xs
   | l == 0    = return xs
@@ -45,6 +50,7 @@ expandRandList xs
 deleteAt :: LL.ListLike f i => Int -> f -> f
 deleteAt n f = LL.take n f <> LL.drop (n+1) f
 
+-- Dada una list-like, borra un elemento random de la misma (si no es vacia)
 deleteRandList :: (LL.ListLike f i, MonadRandom m) => f -> m f
 deleteRandList xs =
   if LL.null xs
@@ -62,6 +68,7 @@ swapAt xs i j = left <> LL.cons elemJ middle <> LL.cons elemI right
         middle = LL.take (j - i - 1) (LL.drop (i + 1) xs)
         right = LL.drop (j + 1) xs
 
+-- Elige dos posiciones random de la list-like y los swapea
 swapRandList :: (LL.ListLike f i, MonadRandom m) => f -> m f
 swapRandList xs =
   if LL.null xs
@@ -71,12 +78,14 @@ swapRandList xs =
     j <- getRandomR (0, LL.length xs - 1)
     return $ if i == j then xs else swapAt xs (min i j) (max i j)
 
+-- Elige dos lugares random  de las dos listas y "pega" la primer parte del primero y la segunda parte del segundo
 spliceAtRandom :: (LL.ListLike f i, MonadRandom m) => f -> f -> m f
 spliceAtRandom xs1 xs2 = do
   idx1 <- getRandomR (0, LL.length xs1 - 1)
   idx2 <- getRandomR (0, LL.length xs2 - 1)
   return $ LL.take idx1 xs1 <> LL.drop idx2 xs2
 
+-- Elige dos lugares random de las dos listas, toma las primeras partes de ambas y las intercala.
 interleaveAtRandom :: (LL.ListLike f i, MonadRandom m) => f -> f -> m f
 interleaveAtRandom xs1 xs2 = do
   idx1 <- getRandomR (0, LL.length xs1 - 1)

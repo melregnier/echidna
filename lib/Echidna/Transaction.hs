@@ -36,6 +36,7 @@ import Echidna.Types.Signature (SignatureMap, SolCall, ContractA, FunctionHash, 
 import Echidna.Types.Tx
 import Echidna.Types.World (World(..))
 
+-- Return whether an address appears as self destructed in the VM
 hasSelfdestructed :: (MonadState y m, Has VM y) => Addr -> m Bool
 hasSelfdestructed a = do
   sd <- use $ hasLens . tx . substate . selfdestructs
@@ -57,16 +58,17 @@ genTxM :: (MonadRandom m, MonadReader x m, MonadState y m, Has TxConf x, Has Wor
   -> Map Addr Contract
   -> m Tx
 genTxM memo m = do
-  TxConf _ g gp t b mv <- view hasLens
-  World ss hmm lmm ps _ <- view hasLens
+  TxConf _ g gp t b mv <- view hasLens -- available gas, max gas price, max time delay, max block delay, max value
+  World ss hmm lmm ps _ <- view hasLens -- senders, high priority calls, low priority calls, payable signatures
   genDict <- use hasLens
   mm <- getSignatures hmm lmm
+  -- AKA dictValues devuelve las ctes que son int o uint guardadas en genDict
   let ns = dictValues genDict
-  s' <- rElem ss
-  r' <- rElem $ NE.fromList . catMaybes $ toContractA mm <$> toList m
-  c' <- genInteractionsM genDict (snd r')
-  v' <- genValue mv ns ps c'
-  t' <- (,) <$> genDelay t ns <*> genDelay b ns
+  s' <- rElem ss -- sender
+  r' <- rElem $ NE.fromList . catMaybes $ toContractA mm <$> toList m -- receiver: (address, list solsignatures)
+  c' <- genInteractionsM genDict (snd r') -- sol call
+  v' <- genValue mv ns ps c' -- value (ether) que se envia en la transaccion
+  t' <- (,) <$> genDelay t ns <*> genDelay b ns -- delay: (time delay, block delay)
   pure $ Tx (SolCall c') s' (fst r') g gp v' (level t')
   where
     toContractA :: SignatureMap -> (Addr, Contract) -> Maybe ContractA
@@ -82,6 +84,10 @@ genDelay mv ds = do
   w256 . fromIntegral <$> g
   where randValue = getRandomR (1 :: Integer, fromIntegral mv)
 
+-- Dada un maximum value mv (de ether enviado en la transaccion), una lista de valores interesantes ds (del genDict)
+-- una lista de payable signatures ps y una sol call sc, genera un valor de transaccion.
+-- Si la sol call no es payable devuelve en gral 0 pero muy de vez en cuando devuelve un valor valido para testear que pasa.
+-- Si la sol call es payable, con prob 1 en 11 elige un value de ds y si no un randValue entre 0 y max value.
 genValue :: MonadRandom m => Word -> [Integer] -> [FunctionHash] -> SolCall -> m Word
 genValue mv ds ps sc =
   if sig `elem` ps then do
@@ -106,7 +112,8 @@ removeCallTx :: Tx -> Tx
 removeCallTx (Tx _ _ r _ _ _ d) = Tx NoCall 0 r 0 0 0 d
 
 -- | Given a 'Transaction', generate a random \"smaller\" 'Transaction', preserving origin,
--- destination, value, and call signature.
+-- and destination, and usually call signature.
+-- Generally, it tries to get all numbers closer to 0 or bytes with more zeros.
 shrinkTx :: MonadRandom m => Tx -> m Tx
 shrinkTx tx'@(Tx c _ _ _ gp (C _ v) (C _ t, C _ b)) = let
   c' = case c of

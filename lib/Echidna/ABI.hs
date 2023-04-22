@@ -178,12 +178,18 @@ genInteractions l = genAbiCall =<< rElem l
 -- Mutation helper functions
 
 -- | Given an 'Integral' number n, get a random number in [0,2n].
+-- Gives double chance to pick n over the rest of the range.
+-- TODODM arreglar bug si x es negativo, porque getRandomR tiene unspecified behavior si lo > hi
 mutateNum :: (Integral a, MonadRandom m) => a -> m a
 mutateNum x = bool (x +) (x -) <$> getRandom <*> (fromIntegral <$> getRandomR (0, toInteger x))
 
+-- Since x could not be an uintN (example: 16) then it takes the module to make it representable
 fixAbiUInt :: Int -> Word256 -> AbiValue
 fixAbiUInt n x = AbiUInt n (x `mod` ((2 ^ n) - 1))
 
+-- Since x could not be an intN (example: 16) then it takes the module to make it representable if it's possitive
+-- If it's negative and exceeds the representation, it transforms it into the lowest number possible (who knows why)
+-- TODODM change this to make it equiprobable
 fixAbiInt :: Int -> Int256 -> AbiValue
 fixAbiInt n x = if x <= -(2 ^ (n - 1)) then AbiInt n (-(2 ^ n)) else AbiInt n (x `mod` (2 ^ (n - 1) - 1))
 
@@ -286,8 +292,8 @@ mutateAbiValue (AbiInt n x)          = getRandomR (0, 9 :: Int) >>= -- 10% of ch
 
 mutateAbiValue (AbiAddress x)        = return $ AbiAddress x
 mutateAbiValue (AbiBool _)           = genAbiValue AbiBoolType
-mutateAbiValue (AbiBytes n b)        = do fs <- replicateM n getRandom
-                                          xs <- mutateLL (Just n) (BS.pack fs) b
+mutateAbiValue (AbiBytes n b)        = do fs <- replicateM n getRandom  -- fs va a tener valores random para completar en caso de que al mutar el original tengas menos que n valores
+                                          xs <- mutateLL (Just n) (BS.pack fs) b -- aplica mutaciones a los bytes originales y completa de ser necesario con fs
                                           return (AbiBytes n xs)
 
 mutateAbiValue (AbiBytesDynamic b)   = AbiBytesDynamic <$> mutateLL Nothing mempty b
@@ -319,7 +325,7 @@ genWithDict genDict m g t = do
   let maybeValM = if genDict ^. pSynthA >= r then fromDict else pure Nothing
       fromDict = uniformMay (M.lookupDefault [] t m)
   fromMaybe <$> g t <*> maybeValM
-
+  
 -- | Synthesize a random 'AbiValue' given its 'AbiType'. Requires a dictionary.
 genAbiValueM :: MonadRandom m => GenDict -> AbiType -> m AbiValue
 genAbiValueM genDict = genWithDict genDict (toList <$> genDict ^. constants) $ \case

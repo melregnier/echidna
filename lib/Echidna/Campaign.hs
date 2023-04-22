@@ -14,6 +14,7 @@ module Echidna.Campaign where
 import Control.Lens
 import Control.Monad (liftM3, replicateM, when, (<=<), ap, unless)
 import Control.Monad.Catch (MonadCatch(..), MonadThrow(..))
+import Control.Monad.IO.Class (MonadIO(..))
 import Control.Monad.Random.Strict (MonadRandom, RandT, evalRandT, getRandomR, uniform, uniformMay)
 import Control.Monad.Reader.Class (MonadReader)
 import Control.Monad.Reader (runReaderT)
@@ -22,7 +23,7 @@ import Control.Monad.Trans (lift)
 import Control.Monad.Trans.Random.Strict (liftCatch)
 import Data.Binary.Get (runGetOrFail)
 import Data.Bool (bool)
-import Data.Map (Map, unionWith, (\\), elems, keys, lookup, insert, mapWithKey)
+import Data.Map (Map, unionWith, (\\), elems, keys, lookup, insert, insertWith, mapWithKey, findWithDefault)
 import Data.Maybe (fromMaybe, isJust, mapMaybe)
 import Data.Ord (comparing)
 import Data.Has (Has(..))
@@ -43,8 +44,8 @@ import Echidna.Test
 import Echidna.Transaction
 import Echidna.Shrink (shrinkSeq)
 import Echidna.Types.Campaign
-import Echidna.Types.Corpus (InitialCorpus)
-import Echidna.Types.Coverage (coveragePoints)
+import Echidna.Types.Corpus (InitialCorpus, Corpus)
+import Echidna.Types.Coverage (coveragePoints, ppCoverageSequenceFrequences, SequenceCoverage, CoverageSequenceFrequences, ppCorpusWithEnergies)
 import Echidna.Types.Test
 import Echidna.Types.Buffer (viewBuffer)
 import Echidna.Types.Signature (makeBytecodeMemo)
@@ -52,6 +53,8 @@ import Echidna.Types.Tx (TxCall(..), Tx(..), TxConf, getResult, src, call, _SolC
 import Echidna.Types.Solidity (SolConf(..), sender)
 import Echidna.Types.World (World)
 import Echidna.Mutator.Corpus
+import UnliftIO (MonadUnliftIO)
+
 
 instance MonadThrow m => MonadThrow (RandT g m) where
   throwM = lift . throwM
@@ -89,16 +92,14 @@ isSuccess = allOf (tests . traverse . testState) (\case { Passed -> True; Open _
 updateTest :: ( MonadCatch m, MonadRandom m, MonadReader x m
               , Has SolConf x, Has TestConf x, Has TxConf x, Has CampaignConf x, Has DappInfo x)
            => World -> VM -> Maybe (VM, [Tx]) -> EchidnaTest -> m EchidnaTest
-
-
 updateTest w vm (Just (vm', xs)) test = do
   tl <- view (hasLens . testLimit)
   case test ^. testState of
     Open i | i >= tl -> case test ^. testType of
                           OptimizationTest _ _ -> pure $ test { _testState = Large (-1) }
-                          _                    -> pure $ test { _testState = Passed }
-    Open i           -> do r <- evalStateT (checkETest test) vm' 
-                           pure $ updateOpenTest test xs i r 
+                          _                    -> pure $ test { _testState = Passed } -- si intente las suficientes veces, asumo que es unsolvable
+    Open i           -> do r <- evalStateT (checkETest test) vm'
+                           pure $ updateOpenTest test xs i r
     _                -> updateTest w vm Nothing test
 
 updateTest _ vm Nothing test = do
@@ -111,7 +112,7 @@ updateTest _ vm Nothing test = do
     Large i | i >= sl -> pure $ test { _testState =  Solved, _testReproducer = x }
     Large i           -> if length x > 1 || any canShrinkTx x
                              then do (txs, val, evs, r) <- evalStateT (shrinkSeq (checkETest test) (v, es, res) x) vm
-                                     pure $ test { _testState = Large (i + 1), _testReproducer = txs, _testEvents = evs, _testResult = r, _testValue = val} 
+                                     pure $ test { _testState = Large (i + 1), _testReproducer = txs, _testEvents = evs, _testResult = r, _testValue = val}
                              else pure $ test { _testState = Solved, _testReproducer = x}
     _                   -> pure test
 
@@ -130,9 +131,9 @@ evalSeq :: ( MonadCatch m, MonadRandom m, MonadReader x m, MonadState y m
 evalSeq w v e = go [] where
   go r xs = do
     v' <- use hasLens
-    runUpdate (updateTest w v $ Just (v', reverse r))
+    runUpdate (updateTest w v $ Just (v', reverse r)) -- checks the properties/assertions/optimizations/whatever and updates the echidna tests before executing the next tx using the last vm state
     case xs of []     -> pure []
-               (y:ys) -> e y >>= \a -> ((y, a) :) <$> go (y:r) ys
+               (y:ys) -> e y >>= \a -> ((y, a) :) <$> go (y:r) ys -- executes the first tx in the list and adds the results to the accumulator list of executed txs
 
 -- | Given a call sequence that produces Tx with gas >= g for f, try to randomly generate
 -- a smaller one that achieves at least that gas usage
@@ -173,14 +174,18 @@ updateGasInfo ((t, _):ts) tseq gi = updateGasInfo ts (t:tseq) gi
 execTxOptC :: (MonadState x m, Has Campaign x, Has VM x, MonadThrow m) => Tx -> m (VMResult, Int)
 execTxOptC t = do
   let cov = hasLens . coverage
-  og   <- cov <<.= mempty
+  og   <- cov <<.= mempty -- og <- original coverage, it gets replaced with an empty map to record the new coverage
+  -- Add new tx path to SequenceCoverage
+  let lensCurrentSequenceCoverage = hasLens . currentSequenceCoverage
   memo <- use $ hasLens . bcMemo
-  res  <- execTxWith vmExcept (execTxWithCov memo cov) t
+  res  <- execTxWith vmExcept (execTxWithCov memo cov lensCurrentSequenceCoverage) t -- vmExcept -> function that wraps an exception to known classes
+  -- res <- (VMResult, Int) siendo el int el gas use
   let vmr = getResult $ fst res
-  -- Update the coverage map with the proper binary according to the vm result
+  -- Update all the CoverageInfo in the coverage map with the tx result
   cov %= mapWithKey (\_ s -> DS.map (set _4 vmr) s)
   -- Update the global coverage map with the union of the result just obtained
   cov %= unionWith DS.union og
+  -- Update new coverage flag and genDict if new coverage was found
   grew <- (== LT) . comparing coveragePoints og <$> use cov
   when grew $ do
     hasLens . genDict %= gaddCalls ([t ^. call] ^.. traverse . _SolCall)
@@ -188,36 +193,38 @@ execTxOptC t = do
   return res
 
 -- | Given a list of transactions in the corpus, save them discarding reverted transactions
-addToCorpus :: (MonadState s m, Has Campaign s) => Int -> [(Tx, (VMResult, Int))] -> m ()
-addToCorpus n res = unless (null rtxs) $ hasLens . corpus %= DS.insert (toInteger n, rtxs)
+addToCorpus :: (MonadState s m, Has Campaign s) => SequenceCoverage -> [(Tx, (VMResult, Int))] -> m ()
+addToCorpus sequenceCoverage res = unless (null rtxs) $ hasLens . corpus %= DS.insert (sequenceCoverage, rtxs)
   where rtxs = fst <$> res
 
 -- | Generate a new sequences of transactions, either using the corpus or with randomly created transactions
 randseq :: ( MonadRandom m, MonadReader x m, MonadState y m
            , Has TxConf x, Has TestConf x, Has CampaignConf x, Has GenDict y, Has Campaign y)
         => InitialCorpus -> Int -> Map Addr Contract -> World -> m [Tx]
-randseq (n,txs) ql o w = do
+randseq (n,txs) ql o w = do -- txs es una lista de lista de transacciones
   ca <- use hasLens
-  cs <- view $ hasLens . mutConsts
+  cs <- view $ hasLens . mutConsts -- cs son las ctes de mutacion de CampaignConf
   txConf :: TxConf <- view hasLens
-  let ctxs = ca ^. corpus
+  let ctxs = ca ^. corpus -- ctxs son las txs del corpus
       -- TODO: include reproducer when optimizing
       --rs   = filter (not . null) $ map (view testReproducer) $ ca ^. tests
       p    = ca ^. ncallseqs
   if n > p then -- Replay the transactions in the corpus, if we are executing the first iterations
-    return $ txs !! p
+    return $ txs !! p -- devuelvo la p-esima secuencia de txs en el corpus
   else do
     memo <- use $ hasLens . bcMemo
     -- Randomly generate new random transactions
     gtxs <- replicateM ql $ runReaderT (genTxM memo o) (w, txConf)
     -- Generate a random mutator
-    cmut <- if ql == 1 then seqMutatorsStateless (fromConsts cs) else seqMutatorsStateful (fromConsts cs)
+    cmut <- if ql == 1 then seqMutatorsStateless (fromConsts cs) else seqMutatorsStateful (fromConsts cs) -- las ctes de mutacion determinan que tan probable es elegir un mutator
     -- Fetch the mutator
     let mut = getCorpusMutation cmut
+    let lensFreqMap = hasLens . coverageSequenceFrequences
+    freqMap <- use lensFreqMap
     if DS.null ctxs then
       return gtxs      -- Use the generated random transactions
     else
-      mut ql ctxs gtxs -- Apply the mutator
+      mut ql ctxs gtxs freqMap-- Apply the mutator
 
 -- | Given an initial 'VM' and 'World' state and a number of calls to generate, generate that many calls,
 -- constantly checking if we've solved any tests or can shrink known solves. Update coverage as a result
@@ -227,6 +234,7 @@ callseq :: ( MonadCatch m, MonadRandom m, MonadReader x m, MonadState y m
 callseq ic v w ql = do
   -- First, we figure out whether we need to execute with or without coverage optimization and gas info,
   -- and pick our execution function appropriately
+
   coverageEnabled <- isJust <$> view (hasLens . knownCoverage)
   let ef = if coverageEnabled then execTxOptC else execTx
       old = v ^. env . EVM.contracts
@@ -236,22 +244,33 @@ callseq ic v w ql = do
   -- Then, we generate the actual transaction in the sequence
   is <- randseq ic ql old w
   -- We then run each call sequentially. This gives us the result of each call, plus a new state
+  -- AKA res es: [(Tx, (VMResult, Int))] donde Int es el gas use
+  -- AKA s es el state que es: (VM, Campaign)
   (res, s) <- runStateT (evalSeq w v ef is) (v, ca)
   let new = s ^. _1 . env . EVM.contracts
+      -- Q: por que puede cambiar/ agregarse addresses de contratos??
+      -- TODO: chequear usos de contracts para ver cuando se modifica
       -- compute the addresses not present in the old VM via set difference
       diff = keys $ new \\ old
       -- and construct a set to union to the constants table
       diffs = H.fromList [(AbiAddressType, S.fromList $ AbiAddress <$> diff)]
   -- Save the global campaign state (also vm state, but that gets reset before it's used)
-  hasLens .= snd s -- Update the gas estimation
+  hasLens .= snd s
+  -- Update the gas estimation
   when gasEnabled $ hasLens . gasInfo %= updateGasInfo res []
+  -- Update the frequence map with the new SequenceCoverage executed
+  let lensCoverageFrequencesSequence = hasLens . coverageSequenceFrequences
+  let currentSeqCoverage = s ^. _2 . currentSequenceCoverage
+  lensCoverageFrequencesSequence %= insertWith (+) currentSeqCoverage 1
   -- If there is new coverage, add the transaction list to the corpus
-  when (s ^. _2 . newCoverage) $ addToCorpus (s ^. _2 . ncallseqs + 1) res
+  when (s ^. _2 . newCoverage) $ addToCorpus currentSeqCoverage res
   -- Reset the new coverage flag
   hasLens . newCoverage .= False
+  -- Reset the current sequence path
+  hasLens . currentSequenceCoverage .= mempty 
   -- Keep track of the number of calls to `callseq`
   hasLens . ncallseqs += 1
-  -- Now we try to parse the return values as solidity constants, and add then to the 'GenDict'
+  -- Now we try to parse the return values as solidity constants, and add them to the 'GenDict'
   types <- use $ hasLens . rTypes
   let results = parse (map (\(t, (vr, _)) -> (t, vr)) res) types
       -- union the return results with the new addresses
@@ -262,19 +281,26 @@ callseq ic v w ql = do
     -- Given a list of transactions and a return typing rule, this checks whether we know the return
     -- type for each function called, and if we do, tries to parse the return value as a value of that
     -- type. It returns a 'GenDict' style HashMap.
-    parse l rt = H.fromList . flip mapMaybe l $ \(x, r) -> case (rt =<< x ^? call . _SolCall . _1, r) of
-      (Just ty, VMSuccess (ConcreteBuffer b)) ->
-        (ty,) . S.fromList . pure <$> runGetOrFail (getAbi ty) (b ^. lazy) ^? _Right . _3
-      _ -> Nothing
+    -- l es una lista de (tx, vmresult), rt es una funcion que dado un function name te devuelve quizas el AbiType que returnea
+    parse l rt = H.fromList . flip mapMaybe l $
+      \(x, r) -> case (rt =<< x ^? call . _SolCall . _1, r) of
+        (Just ty, VMSuccess (ConcreteBuffer b)) -> -- ty es el return abi type
+            (ty,) . S.fromList . pure <$> runGetOrFail (getAbi ty) (b ^. lazy) ^? _Right . _3
+        _ -> Nothing
+
+-- Compute energies and return sequence co
+computeEnergies2 :: Corpus -> CoverageSequenceFrequences -> [(SequenceCoverage, Rational)]
+computeEnergies2 corpus coverageSeqFreq =
+  map (\(sequenceCoverage, txs) -> (sequenceCoverage, 1 / fromIntegral (findWithDefault 0 sequenceCoverage coverageSeqFreq))) $ DS.toList corpus
 
 -- | Run a fuzzing campaign given an initial universe state, some tests, and an optional dictionary
 -- to generate calls with. Return the 'Campaign' state once we can't solve or shrink anything.
-campaign :: ( MonadCatch m, MonadRandom m, MonadReader x m
+campaign :: ( MonadCatch m, MonadRandom m, MonadReader x m, MonadUnliftIO m
             , Has SolConf x, Has TestConf x, Has TxConf x, Has CampaignConf x, Has DappInfo x)
-         => StateT Campaign m a -- ^ Callback to run after each state update (for instrumentation)
+         => StateT Campaign m a -- ^ Callback to run after each state update (for instrumentation) (kind of an UI update based on the campaign)
          -> VM                  -- ^ Initial VM state
          -> World               -- ^ Initial world state
-         -> [EchidnaTest]       -- ^ Tests to evaluate
+         -> [EchidnaTest]       -- ^ Tests to evaluate (could be empty if no properties or assertions or optimization functions have been created in each mode)
          -> Maybe GenDict       -- ^ Optional generation dictionary
          -> [[Tx]]              -- ^ Initial corpus of transactions
          -> m Campaign
@@ -284,7 +310,7 @@ campaign u vm w ts d txs = do
   let effectiveSeed = fromMaybe (d' ^. defSeed) g
       effectiveGenDict = d' { _defSeed = effectiveSeed }
       d' = fromMaybe defaultDict d
-  execStateT
+  resultCampaign <- execStateT
     (evalRandT runCampaign (mkStdGen effectiveSeed))
     (Campaign
       ts
@@ -292,21 +318,31 @@ campaign u vm w ts d txs = do
       mempty
       effectiveGenDict
       False
+      mempty
+      mempty
       DS.empty
       0
       memo
     )
+  CampaignConf tl sof _ q sl _ _ _ _ _ <- view hasLens
+  liftIO $ putStrLn $ ppCoverageSequenceFrequences $ resultCampaign ^. coverageSequenceFrequences
+  liftIO $ putStrLn $ "\nSecuencias ejecutadas: " ++ show (resultCampaign ^. ncallseqs)
+  liftIO $ putStrLn $ "\nTest limit: " ++ show tl
+  liftIO $ putStrLn $ "\nShrink limit: " ++ show sl
+  liftIO $ putStrLn $ "Corpus with energies: " ++ ppCorpusWithEnergies (computeEnergies2 (resultCampaign ^. corpus) (resultCampaign ^. coverageSequenceFrequences))
+  return resultCampaign
+
   where
     -- "mapMaybe ..." is to get a list of all contracts
     ic          = (length txs, txs)
     memo        = makeBytecodeMemo . mapMaybe (viewBuffer . (^. bytecode)) . elems $ (vm ^. env . EVM.contracts)
     step        = runUpdate (updateTest w vm Nothing) >> lift u >> runCampaign
     runCampaign = use (hasLens . tests . to (fmap (view testState))) >>= update
-    update c    = do
+    update testStates    = do
       CampaignConf tl sof _ q sl _ _ _ _ _ <- view hasLens
       Campaign { _ncallseqs } <- view hasLens <$> get
-      if | sof && any (\case Solved -> True; Failed _ -> True; _ -> False) c -> lift u
-         | any (\case Open  n   -> n < tl; _ -> False) c                       -> callseq ic vm w q >> step
-         | any (\case Large n   -> n < sl; _ -> False) c                       -> step
-         | null c && (q * _ncallseqs) < tl                                     -> callseq ic vm w q >> step
+      if | sof && any (\case Solved -> True; Failed _ -> True; _ -> False) testStates -> lift u
+         | any (\case Open  n   -> n < tl; _ -> False) testStates                       -> callseq ic vm w q >> step
+         | any (\case Large n   -> n < sl; _ -> False) testStates                       -> step
+         | null testStates && (q * _ncallseqs) < tl                                     -> callseq ic vm w q >> step -- case of empty tests, it's an approximate way of defining a limit to the amount of executions with tl
          | otherwise                                                           -> lift u

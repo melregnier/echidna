@@ -33,14 +33,14 @@ shrinkSeq f (v,es,r) xs = do
   (value, events, result) <- check xs'
   -- if the test passed it means we didn't shrink successfully
   pure $ case (value,v) of 
-    (BoolValue False, _)               ->  (xs', value, events, result)
-    (IntValue x, IntValue y) | x >= y  ->  (xs', value, events, result)
+    (BoolValue False, _)               ->  (xs', value, events, result) -- if the test still fails, the shrink was successful and we return the new test
+    (IntValue x, IntValue y) | x >= y  ->  (xs', value, events, result) -- if the test made the value bigger or equal, the shrink was successful and we return the new test
     _                                  ->  (xs, v, es, r)
   where
     check xs' = do
-      og <- get
-      res <- traverse_ execTx xs' >> f
-      put og
+      og <- get -- obtain the original state
+      res <- traverse_ execTx xs' >> f -- for each tx in the new sequence execute it and finally check if the test still passes
+      put og -- restore original state to what it was (side note: is this necessary? this VM state is not used afterwards. maybe it's for completeness)
       pure res
     shrinkSender x = do
       l <- view (hasLens . sender)

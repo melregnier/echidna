@@ -22,7 +22,7 @@ import qualified Data.Set as S
 
 import Echidna.Transaction
 import Echidna.Types.Buffer (viewBuffer)
-import Echidna.Types.Coverage (CoverageMap)
+import Echidna.Types.Coverage (CoverageMap, SequenceCoverage)
 import Echidna.Types.Tx (TxCall(..), Tx, TxResult(..), call, dst, initialTimestamp, initialBlockNumber)
 
 import Echidna.Types.Signature (BytecodeMemo, lookupBytecodeMetadata)
@@ -73,7 +73,8 @@ vmExcept :: MonadThrow m => Error -> m ()
 vmExcept e = throwM $ case VMFailure e of {Illegal -> IllegalExec e; _ -> UnknownFailure e}
 
 -- | Given an error handler `onErr`, an execution strategy `executeTx`, and a transaction `tx`,
--- execute that transaction using the given execution strategy, calling `onErr` on errors.
+-- execute that transaction using the given execution strategy, calling `onErr` on errors and
+-- calculating gas use.
 execTxWith :: (MonadState x m, Has VM x) => (Error -> m ()) -> m VMResult -> Tx -> m (VMResult, Int)
 execTxWith onErr executeTx tx' = do
   isSelfDestruct <- hasSelfdestructed (tx' ^. dst)
@@ -87,6 +88,10 @@ execTxWith onErr executeTx tx' = do
     gasLeftAfterTx <- use $ hasLens . state . gas
     checkAndHandleQuery vmBeforeTx vmResult' onErr executeTx tx' gasLeftBeforeTx gasLeftAfterTx
 
+-- Handles the VMResult and returns it along with the gas used in the tx. 
+-- If the tx execution ended with exception, it resets the state if necessary.
+-- If the tx execution halted because it expects a contract or slot, then provide
+-- the resource needed and continue execution.
 checkAndHandleQuery :: (MonadState x m, Has VM x) => VM -> VMResult -> (Error -> m ()) -> m VMResult -> Tx -> EVM.Types.Word -> EVM.Types.Word -> m (VMResult, Int)
 checkAndHandleQuery vmBeforeTx vmResult' onErr executeTx tx' gasLeftBeforeTx gasLeftAfterTx =
         -- Continue transaction whose execution queried a contract or slot
@@ -136,7 +141,7 @@ handleErrorsAndConstruction onErr vmResult' vmBeforeTx tx' = case (vmResult', tx
     -- contract address, calldata, result and traces.
     hasLens . result ?= vmResult'
     hasLens . state . calldata .= calldataBeforeVMReset
-    hasLens . state . callvalue .= callvalueBeforeVMReset 
+    hasLens . state . callvalue .= callvalueBeforeVMReset
     hasLens . traces .= tracesBeforeVMReset
     hasLens . state . codeContract .= codeContractBeforeVMReset
   (VMFailure x, _) -> onErr x
@@ -153,39 +158,51 @@ execTx :: (MonadState x m, Has VM x, MonadThrow m) => Tx -> m (VMResult, Int)
 execTx = execTxWith vmExcept $ liftSH exec
 
 -- | Execute a transaction, logging coverage at every step.
-execTxWithCov :: (MonadState x m, Has VM x) => BytecodeMemo -> Lens' x CoverageMap -> m VMResult
-execTxWithCov memo l = do
-  vm :: VM          <- use hasLens
-  cm :: CoverageMap <- use l
-  let (r, vm', cm') = loop vm cm
-  hasLens .= vm'
-  l       .= cm'
-  return r
-  where
-    -- | Repeatedly exec a step and add coverage until we have an end result
-    loop :: VM -> CoverageMap -> (VMResult, VM, CoverageMap)
-    loop vm cm = case _result vm of
-      Nothing  -> loop (stepVM vm) (addCoverage vm cm)
-      Just r   -> (r, vm, cm)
+execTxWithCov :: (MonadState x m, Has VM x) => BytecodeMemo -> Lens' x CoverageMap
+                                            -> Lens' x SequenceCoverage -> m VMResult
+execTxWithCov memo l lensCurrentSeqCoverage = do
+ vm :: VM          <- use hasLens
+ cm :: CoverageMap <- use l
+ currentCoverage :: SequenceCoverage <- use lensCurrentSeqCoverage
+ let (r, vm', cm', newSequenceCoverage) = loop vm cm currentCoverage
+ -- 
+ lensCurrentSeqCoverage .= newSequenceCoverage
+ hasLens .= vm'
+ l       .= cm'
+ return r
+ where
+   -- | Repeatedly exec a step and add coverage until we have an end result
+   loop :: VM -> CoverageMap -> SequenceCoverage -> (VMResult, VM, CoverageMap, SequenceCoverage)
+   loop vm cm sequenceCoverage = case _result vm of
+     Nothing  -> loop (stepVM vm) (addCoverage vm cm) (addSequenceCoverage vm sequenceCoverage)
+     Just r   -> (r, vm, cm, sequenceCoverage)
 
-    -- | Execute one instruction on the EVM
-    stepVM :: VM -> VM
-    stepVM = execState exec1
 
-    -- | Add current location to the CoverageMap
-    addCoverage :: VM -> CoverageMap -> CoverageMap
-    addCoverage vm = M.alter
-                       (Just . maybe mempty (S.insert $ currentCovLoc vm))
-                       (currentMeta vm)
+   -- | Execute one instruction on the EVM
+   stepVM :: VM -> VM
+   stepVM = execState exec1 -- exec1 is defined in EVM and execs 1 step in the EVM
 
-    -- | Get the VM's current execution location
-    currentCovLoc vm = (vm ^. state . pc, fromMaybe 0 $ vmOpIx vm, length $ vm ^. frames, Stop)
 
-    -- | Get the current contract's bytecode metadata
-    currentMeta vm = fromMaybe (error "no contract information on coverage") $ do
-      buffer <- vm ^? env . contracts . at (vm ^. state . contract) . _Just . bytecode
-      bc <- viewBuffer buffer
-      pure $ lookupBytecodeMetadata memo bc
+   -- | Add current location to the CoverageMap
+   addCoverage :: VM -> CoverageMap -> CoverageMap
+   addCoverage vm = M.alter
+                      (Just . maybe mempty (S.insert $ currentCovLoc vm))
+                      (currentMeta vm) -- key: contract bytecode
+
+   addSequenceCoverage :: VM -> SequenceCoverage -> SequenceCoverage
+   addSequenceCoverage vm = M.alter
+                              (Just . maybe mempty (S.insert $ vm ^. state . pc)) -- add to set the pc
+                              (currentMeta vm) -- key: contract bytecode
+
+   -- | Get the VM's current execution location
+   currentCovLoc vm = (vm ^. state . pc, fromMaybe 0 $ vmOpIx vm, length $ vm ^. frames, Stop) -- the tx result is Stop because the tx has not ended yet, it is updated afterwards when the tx result is obtained
+
+
+   -- | Get the current contract's bytecode metadata
+   currentMeta vm = fromMaybe (error "no contract information on coverage") $ do
+     buffer <- vm ^? env . contracts . at (vm ^. state . contract) . _Just . bytecode
+     bc <- viewBuffer buffer
+     pure $ lookupBytecodeMetadata memo bc
 
 initialVM :: VM
 initialVM = vmForEthrunCreation mempty & block . timestamp .~ litWord initialTimestamp

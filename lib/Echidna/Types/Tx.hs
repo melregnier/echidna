@@ -95,7 +95,7 @@ createTxWithValue bc s d g = Tx (SolCreate bc) s d g 0
 
 data TxResult = ReturnTrue
               | ReturnFalse
-              | Stop
+              | Stop -- this is when the tx has not ended yet (we supose)
               | ErrorBalanceTooLow 
               | ErrorUnrecognizedOpcode
               | ErrorSelfDestruction
